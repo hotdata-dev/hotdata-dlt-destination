@@ -61,3 +61,77 @@ def test_upload_and_load_managed_table() -> None:
     assert fake_runtime.upload_calls == 1
     assert fake_runtime.load_calls == 1
     client.close()
+
+
+def test_fetch_table_rows_skips_unsynced_tables() -> None:
+    class FakeRuntime:
+        def list_managed_tables(self, database: str, *, schema: str):
+            assert database == "dlt"
+            assert schema == "public"
+            return [SimpleNamespace(table="orders", synced=False)]
+
+        def close(self) -> None:
+            return None
+
+    client = HotdataClient(
+        api_key="k",
+        workspace_id="ws_1",
+        api_base_url="https://api.hotdata.dev",
+        max_retries=1,
+        retry_backoff_seconds=0.0,
+    )
+    client._runtime = FakeRuntime()  # noqa: SLF001
+
+    rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
+    assert rows == []
+    client.close()
+
+
+def test_fetch_table_rows_reads_synced_table() -> None:
+    class FakeRuntime:
+        def list_managed_tables(self, database: str, *, schema: str):
+            return [SimpleNamespace(table="orders", synced=True)]
+
+        def execute_sql(self, sql: str):
+            assert sql == "SELECT * FROM dlt.public.orders"
+            return SimpleNamespace(
+                to_records=lambda: [{"id": 1, "name": "alpha"}],
+            )
+
+        def close(self) -> None:
+            return None
+
+    client = HotdataClient(
+        api_key="k",
+        workspace_id="ws_1",
+        api_base_url="https://api.hotdata.dev",
+        max_retries=1,
+        retry_backoff_seconds=0.0,
+    )
+    client._runtime = FakeRuntime()  # noqa: SLF001
+
+    rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
+    assert rows == [{"id": 1, "name": "alpha"}]
+    client.close()
+
+
+def test_fetch_table_rows_returns_empty_when_table_missing() -> None:
+    class FakeRuntime:
+        def list_managed_tables(self, database: str, *, schema: str):
+            return []
+
+        def close(self) -> None:
+            return None
+
+    client = HotdataClient(
+        api_key="k",
+        workspace_id="ws_1",
+        api_base_url="https://api.hotdata.dev",
+        max_retries=1,
+        retry_backoff_seconds=0.0,
+    )
+    client._runtime = FakeRuntime()  # noqa: SLF001
+
+    rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
+    assert rows == []
+    client.close()

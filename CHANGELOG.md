@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.3.0] - 2026-05-20
+
+### Changed
+
+- Replace SQL staging append/merge with read-modify-write using supported API operations only (`SELECT`, `upload_parquet`, `load_managed_table(replace)`).
+- Switch to dlt parquet file mode (`batch_size=0`) instead of re-encoding typed-jsonl batches.
+- Require `hotdata>=0.2.2` for reliable `ApiClient.close()` lifecycle support.
+
+### Added
+
+- Per-resource `write_disposition` and `primary_key` from dlt table schema.
+- `declared_tables` destination config (and `HOTDATA_DECLARED_TABLES` env var) for multi-table managed databases.
+- `DestinationTerminalException` mapping for non-retryable Hotdata errors.
+- Synced-table guard before `SELECT` to avoid 500s on never-loaded managed tables.
+
+### Removed
+
+- `sql.py` DML staging path (Hotdata query API does not support DML/DDL on managed tables).
+
 ## [0.2.0] - 2026-05-20
 
 ### Changed

@@ -6,23 +6,35 @@ from datetime import UTC, datetime
 from typing import Any
 
 import dlt
+from dlt.common.destination.exceptions import DestinationTerminalException
 from dlt.common.schema import TTableSchema
 from dlt.common.typing import TDataItems
 
 from hotdata_dlt_destination.config import HotdataDestinationConfig
 from hotdata_dlt_destination.contracts import TableContract
+from hotdata_dlt_destination.errors import HotdataTerminalError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 from hotdata_dlt_destination.idempotency import compute_batch_key, compute_row_key
-from hotdata_dlt_destination.parquet import write_rows_parquet
-from hotdata_dlt_destination.sql import append_sql, merge_sql
+from hotdata_dlt_destination.merge import (
+    combine_rows,
+    resolve_primary_key,
+    resolve_write_disposition,
+)
+from hotdata_dlt_destination.parquet import read_parquet_rows, write_rows_parquet
+
+
+def _load_batch_rows(items: TDataItems | str) -> list[dict[str, Any]]:
+    if isinstance(items, str):
+        return read_parquet_rows(items)
+    return [dict(item) for item in items]
 
 
 def _augment_rows(
     *,
     table_name: str,
-    items: TDataItems,
+    items: TDataItems | str,
 ) -> tuple[str, list[dict[str, Any]]]:
-    rows = [dict(item) for item in items]
+    rows = _load_batch_rows(items)
     batch_key = compute_batch_key(table_name, rows)
     loaded_at = datetime.now(UTC).isoformat()
     augmented_rows = [
@@ -37,16 +49,30 @@ def _augment_rows(
     return batch_key, augmented_rows
 
 
+def _declared_tables(
+    *,
+    contract: TableContract,
+    declared_tables: list[str] | None,
+) -> list[str]:
+    normalized_declared = TableContract.declared_table_names(
+        database_name=contract.database_name,
+        schema=contract.schema,
+        table_names=declared_tables or [],
+    )
+    return sorted({*normalized_declared, contract.table_name})
+
+
 @dlt.destination(
-    batch_size=500,
-    loader_file_format="typed-jsonl",
+    batch_size=0,
+    loader_file_format="parquet",
+    loader_parallelism_strategy="table-sequential",
     name="hotdata",
     naming_convention="direct",
     max_table_nesting=0,
     skip_dlt_columns_and_tables=True,
 )
 def hotdata_destination(
-    items: TDataItems,
+    items: TDataItems | str,
     table: TTableSchema,
     api_key: str = dlt.secrets.value,
     workspace_id: str = dlt.secrets.value,
@@ -54,6 +80,7 @@ def hotdata_destination(
     database_name: str = "dlt",
     schema: str = "public",
     write_disposition: str = "append",
+    declared_tables: list[str] | None = None,
     create_database_if_missing: bool = True,
     max_retries: int = 5,
     retry_backoff_seconds: float = 1.0,
@@ -65,6 +92,7 @@ def hotdata_destination(
         database_name=database_name,
         schema=schema,
         write_disposition=write_disposition,
+        declared_tables=tuple(declared_tables or ()),
         create_database_if_missing=create_database_if_missing,
         max_retries=max_retries,
         retry_backoff_seconds=retry_backoff_seconds,
@@ -74,7 +102,9 @@ def hotdata_destination(
         database_name=config.database_name,
         schema=config.schema,
     )
-    _, rows = _augment_rows(table_name=contract.table_name, items=items)
+    disposition = resolve_write_disposition(table, config.write_disposition)
+    primary_key = resolve_primary_key(table)
+    _, batch_rows = _augment_rows(table_name=contract.table_name, items=items)
 
     client = HotdataClient(
         api_key=config.api_key,
@@ -86,47 +116,43 @@ def hotdata_destination(
 
     parquet_path = ""
     try:
-        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as handle:
-            parquet_path = handle.name
-        write_rows_parquet(rows, parquet_path)
-
         client.ensure_managed_database(
             contract.database_name,
             schema=contract.schema,
-            tables=[contract.table_name, contract.staging_table_name],
+            tables=_declared_tables(
+                contract=contract,
+                declared_tables=list(config.declared_tables),
+            ),
             create_if_missing=config.create_database_if_missing,
         )
-        upload_id = client.upload_parquet(parquet_path)
 
-        if config.write_disposition == "replace":
-            client.load_managed_table(
-                contract.database_name,
-                contract.table_name,
+        rows_to_load = batch_rows
+        if disposition != "replace":
+            existing_rows = client.fetch_table_rows(
+                database=contract.database_name,
                 schema=contract.schema,
-                upload_id=upload_id,
+                table=contract.table_name,
             )
-            return
+            rows_to_load = combine_rows(
+                disposition=disposition,
+                existing=existing_rows,
+                incoming=batch_rows,
+                primary_key=primary_key,
+            )
 
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as handle:
+            parquet_path = handle.name
+        write_rows_parquet(rows_to_load, parquet_path)
+
+        upload_id = client.upload_parquet(parquet_path)
         client.load_managed_table(
             contract.database_name,
-            contract.staging_table_name,
+            contract.table_name,
             schema=contract.schema,
             upload_id=upload_id,
         )
-
-        if config.write_disposition in ("merge", "upsert"):
-            statements = merge_sql(
-                target=contract.qualified_target,
-                staging=contract.qualified_staging,
-            )
-        else:
-            statements = append_sql(
-                target=contract.qualified_target,
-                staging=contract.qualified_staging,
-            )
-
-        for statement in statements:
-            client.execute_sql(statement)
+    except HotdataTerminalError as error:
+        raise DestinationTerminalException(str(error)) from error
     finally:
         if parquet_path:
             os.unlink(parquet_path)

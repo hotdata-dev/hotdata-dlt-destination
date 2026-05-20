@@ -25,7 +25,10 @@ def orders_resource(since: str = "2026-01-01T00:00:00+00:00") -> list[dict[str, 
 def main() -> None:
     pipeline = dlt.pipeline(
         pipeline_name="hotdata_incremental",
-        destination=hotdata_destination(write_disposition="upsert"),  # type: ignore[call-arg]
+        destination=hotdata_destination(
+            write_disposition="upsert",
+            declared_tables=["orders"],
+        ),  # type: ignore[call-arg]
         dataset_name="hotdata_incremental",
     )
     load_info = pipeline.run(orders_resource())

@@ -92,7 +92,11 @@ def linear_issues_resource(
 def main() -> None:
     pipeline = dlt.pipeline(
         pipeline_name="hotdata_linear",
-        destination=hotdata_destination(write_disposition="upsert", database_name="linear"),  # type: ignore[call-arg]
+        destination=hotdata_destination(
+            write_disposition="upsert",
+            database_name="linear",
+            declared_tables=["linear_issues"],
+        ),  # type: ignore[call-arg]
         dataset_name="hotdata_linear",
     )
     linear_api_key = os.environ["LINEAR_API_KEY"]

@@ -37,6 +37,7 @@ def test_e2e_linear_to_hotdata() -> None:
             api_base_url=os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev"),
             write_disposition="upsert",
             database_name=f"linear_e2e_{run_suffix}",
+            declared_tables=["linear_issues"],
         ),  # type: ignore[call-arg]
         dataset_name=f"hotdata_linear_e2e_{run_suffix}",
     )

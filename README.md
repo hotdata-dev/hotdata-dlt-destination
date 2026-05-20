@@ -5,7 +5,8 @@
 ## What this repo includes
 
 - Custom destination via `@dlt.destination` in `src/hotdata_dlt_destination/destination.py`
-- Managed-database ingestion through `hotdata-runtime` (`upload_parquet`, `load_managed_table`, SQL merge)
+- Managed-database ingestion through `hotdata-runtime` (`upload_parquet`, `load_managed_table`, `SELECT`)
+- Read-modify-write append/merge using only supported API operations
 - Deterministic batch and row idempotency keys
 - Example pipelines:
   - `hotdata-dlt-basic-pipeline` (append)
@@ -20,11 +21,10 @@
 - Schema: `public`
 - Table name: normalized lowercase dlt table identifier
 - Nested table names: `{parent}__{child}`
-- Staging tables: `_dlt_staging_{table}` for append/merge batches
-- Write semantics:
-  - `append`: parquet upload → staging load → SQL insert into target
-  - `replace`: parquet upload → direct managed-table replace on target
-  - `upsert`/`merge`: parquet upload → staging load → SQL delete by `_hotdata_row_key` + insert
+- Write semantics (all use `load_managed_table(replace)` under the hood):
+  - `replace`: upload batch parquet and replace the target table
+  - `append`: read existing target rows, append batch in Python, replace target
+  - `upsert`/`merge`: read existing rows, upsert by dlt `primary_key` (or `_hotdata_row_key`), replace target
 - Idempotency:
   - Batch key `_hotdata_batch_key` = hash(table + full batch payload)
   - Row key `_hotdata_row_key` = hash(table + canonical row payload)
@@ -36,7 +36,16 @@ Set environment variables (or pass destination kwargs / dlt secrets):
 - `HOTDATA_API_KEY`
 - `HOTDATA_WORKSPACE`
 - `HOTDATA_DATABASE` (managed database name, default `dlt`)
-- optional: `HOTDATA_SCHEMA`, `HOTDATA_WRITE_DISPOSITION`, retry tuning
+- optional: `HOTDATA_SCHEMA`, `HOTDATA_WRITE_DISPOSITION`, `HOTDATA_DECLARED_TABLES`, retry tuning
+
+For pipelines with multiple tables, declare every target table when the managed database is first created:
+
+```python
+hotdata_destination(
+    database_name="analytics",
+    declared_tables=["customers", "orders", "orders__items"],
+)
+```
 
 ## Usage
 
@@ -49,10 +58,13 @@ pipeline = dlt.pipeline(
     destination=hotdata_destination(
         database_name="analytics",
         write_disposition="append",
+        declared_tables=["customers"],
     ),
 )
 pipeline.run(my_resource())
 ```
+
+Per-resource `write_disposition` and `primary_key` from dlt take precedence over the destination default.
 
 ## Developer workflow
 
