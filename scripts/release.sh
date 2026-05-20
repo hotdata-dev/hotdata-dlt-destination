@@ -82,9 +82,18 @@ PY
 
 default_branch() {
   local remote="${1:-origin}"
-  git symbolic-ref --quiet "refs/remotes/${remote}/HEAD" 2>/dev/null | sed "s|refs/remotes/${remote}/||" \
-    || { git branch -r | sed -n "s|^  ${remote}/\\(main\\|master\\)$|\\1|p" | head -1; } \
-    || echo main
+  local branch
+  branch="$(git symbolic-ref --quiet "refs/remotes/${remote}/HEAD" 2>/dev/null | sed "s|refs/remotes/${remote}/||")"
+  if [[ -n "$branch" ]]; then
+    echo "$branch"
+    return
+  fi
+  branch="$(git branch -r --list "${remote}/main" "${remote}/master" | sed "s|^[[:space:]]*${remote}/||" | head -1)"
+  if [[ -n "$branch" ]]; then
+    echo "$branch"
+    return
+  fi
+  echo main
 }
 
 ensure_clean() {
