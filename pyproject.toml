@@ -1,0 +1,45 @@
+[project]
+name = "hotdata-dlt-destination"
+version = "0.2.0"
+description = "dlt destination for loading data into Hotdata managed databases."
+readme = "README.md"
+authors = [
+    { email = "669988+eddietejeda@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "dlt>=1.26.0",
+    "hotdata>=0.2.0",
+    "hotdata-runtime>=0.1.1",
+    "pyarrow>=14",
+]
+
+[project.scripts]
+hotdata-dlt-destination = "hotdata_dlt_destination.cli:main"
+hotdata-dlt-basic-pipeline = "hotdata_dlt_destination.pipelines.basic_pipeline:main"
+hotdata-dlt-incremental-pipeline = "hotdata_dlt_destination.pipelines.incremental_pipeline:main"
+hotdata-dlt-linear-pipeline = "hotdata_dlt_destination.pipelines.linear_pipeline:main"
+
+[build-system]
+requires = ["uv_build>=0.11.8,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.15.13",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "integration: requires live Hotdata and Linear credentials",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
