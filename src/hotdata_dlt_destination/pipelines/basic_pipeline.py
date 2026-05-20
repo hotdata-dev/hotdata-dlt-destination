@@ -17,7 +17,10 @@ def customers_resource() -> list[dict[str, object]]:
 def main() -> None:
     pipeline = dlt.pipeline(
         pipeline_name="hotdata_basic",
-        destination=hotdata_destination(write_disposition="append"),  # type: ignore[call-arg]
+        destination=hotdata_destination(
+            write_disposition="append",
+            declared_tables=["customers"],
+        ),  # type: ignore[call-arg]
         dataset_name="hotdata_basic",
     )
     load_info = pipeline.run(customers_resource())

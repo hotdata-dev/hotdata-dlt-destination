@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from hotdata.rest import ApiException
 from hotdata_runtime.client import HotdataClient as RuntimeClient
@@ -62,6 +62,39 @@ class HotdataClient:
 
         return self._request_with_retry(operation)
 
+    def table_is_synced(
+        self,
+        database: str,
+        table: str,
+        *,
+        schema: str,
+    ) -> bool:
+        for managed_table in self._runtime.list_managed_tables(database, schema=schema):
+            if managed_table.table == table:
+                return managed_table.synced
+        return False
+
+    def fetch_table_rows(
+        self,
+        *,
+        database: str,
+        schema: str,
+        table: str,
+    ) -> list[dict[str, Any]]:
+        def operation() -> list[dict[str, Any]]:
+            if not self.table_is_synced(database, table, schema=schema):
+                return []
+            qualified_table = f"{database}.{schema}.{table}"
+            try:
+                result = self._runtime.execute_sql(f"SELECT * FROM {qualified_table}")
+            except RuntimeError as error:
+                if "not found" in str(error).lower():
+                    return []
+                raise
+            return result.to_records()
+
+        return self._request_with_retry(operation)
+
     def upload_parquet(self, path: str) -> str:
         return self._request_with_retry(lambda: self._runtime.upload_parquet(path))
 
@@ -81,9 +114,6 @@ class HotdataClient:
                 upload_id=upload_id,
             )
         )
-
-    def execute_sql(self, sql: str) -> None:
-        self._request_with_retry(lambda: self._runtime.execute_sql(sql))
 
     def _request_with_retry(self, operation: Callable[[], T]) -> T:
         for attempt in range(1, self._max_retries + 1):

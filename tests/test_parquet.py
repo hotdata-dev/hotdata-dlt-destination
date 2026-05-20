@@ -1,4 +1,4 @@
-from hotdata_dlt_destination.parquet import write_rows_parquet
+from hotdata_dlt_destination.parquet import read_parquet_rows, write_rows_parquet
 
 
 def test_write_rows_parquet_roundtrip(tmp_path) -> None:
@@ -7,3 +7,4 @@ def test_write_rows_parquet_roundtrip(tmp_path) -> None:
     write_rows_parquet(rows, path)
     assert path.exists()
     assert path.stat().st_size > 0
+    assert read_parquet_rows(path) == rows

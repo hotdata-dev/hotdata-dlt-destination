@@ -55,7 +55,7 @@ uv run pytest tests/test_e2e_linear_hotdata.py -m integration
 
 1. Create a new module in `src/hotdata_dlt_destination/pipelines/`.
 2. Define a `dlt.resource` with explicit `name` and `write_disposition`.
-3. Build pipeline with `destination=hotdata_destination(database_name=..., write_disposition=...)`.
+3. Build pipeline with `destination=hotdata_destination(database_name=..., declared_tables=[...])`.
 4. Add script entrypoint in `pyproject.toml`.
 5. Add tests covering schema shape, idempotency key behavior, and retry/error handling.
 
@@ -70,4 +70,5 @@ uv run pytest tests/test_e2e_linear_hotdata.py -m integration
 - `401` / `403`: verify `HOTDATA_API_KEY` and `HOTDATA_WORKSPACE`.
 - `404` on destination paths: verify `HOTDATA_API_BASE_URL` is the API host (for example `https://api.hotdata.dev`).
 - `429` / `5xx`: increase retry/backoff values.
-- SQL merge errors: verify managed database/table names exist and columns are valid in your workspace.
+- `table not declared`: recreate the managed database with all target tables in `declared_tables`, or declare them at create time.
+- Append/merge loads re-read the full target table each batch; large tables may be slow until native append/merge API support lands.

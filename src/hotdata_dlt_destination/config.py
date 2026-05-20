@@ -13,11 +13,16 @@ class HotdataDestinationConfig:
     schema: str = "public"
     write_disposition: str = "append"
     create_database_if_missing: bool = True
+    declared_tables: tuple[str, ...] = ()
     max_retries: int = 5
     retry_backoff_seconds: float = 1.0
 
     @classmethod
     def from_env(cls) -> HotdataDestinationConfig:
+        declared = os.environ.get("HOTDATA_DECLARED_TABLES", "")
+        declared_tables = tuple(
+            table.strip() for table in declared.split(",") if table.strip()
+        )
         return cls(
             api_key=os.environ["HOTDATA_API_KEY"],
             workspace_id=os.environ["HOTDATA_WORKSPACE"],
@@ -29,6 +34,7 @@ class HotdataDestinationConfig:
                 "HOTDATA_CREATE_DATABASE_IF_MISSING", "true"
             ).lower()
             in {"1", "true", "yes"},
+            declared_tables=declared_tables,
             max_retries=int(os.environ.get("HOTDATA_MAX_RETRIES", "5")),
             retry_backoff_seconds=float(os.environ.get("HOTDATA_RETRY_BACKOFF_SECONDS", "1.0")),
         )

@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from dlt.common.schema import TTableSchema
 
 IDENTIFIER_RE = re.compile(r"[^a-zA-Z0-9_]")
-STAGING_PREFIX = "_dlt_staging_"
 
 
 def normalize_identifier(value: str) -> str:
@@ -19,15 +18,10 @@ class TableContract:
     database_name: str
     schema: str
     table_name: str
-    staging_table_name: str
 
     @property
     def qualified_target(self) -> str:
         return f"{self.database_name}.{self.schema}.{self.table_name}"
-
-    @property
-    def qualified_staging(self) -> str:
-        return f"{self.database_name}.{self.schema}.{self.staging_table_name}"
 
     @classmethod
     def from_table_schema(
@@ -50,5 +44,23 @@ class TableContract:
             database_name=normalize_identifier(database_name),
             schema=normalize_identifier(schema),
             table_name=normalized_table_name,
-            staging_table_name=f"{STAGING_PREFIX}{normalized_table_name}",
+        )
+
+    @classmethod
+    def declared_table_names(
+        cls,
+        *,
+        database_name: str,
+        schema: str,
+        table_names: list[str],
+    ) -> list[str]:
+        return sorted(
+            {
+                cls.from_table_schema(
+                    {"name": table_name},
+                    database_name=database_name,
+                    schema=schema,
+                ).table_name
+                for table_name in table_names
+            }
         )

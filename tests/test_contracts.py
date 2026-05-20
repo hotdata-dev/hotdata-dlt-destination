@@ -15,6 +15,13 @@ def test_table_contract_mapping() -> None:
     assert contract.database_name == "linear"
     assert contract.schema == "public"
     assert contract.table_name == "lineitems"
-    assert contract.staging_table_name == "_dlt_staging_lineitems"
     assert contract.qualified_target == "linear.public.lineitems"
-    assert contract.qualified_staging == "linear.public._dlt_staging_lineitems"
+
+
+def test_declared_table_names_normalizes_identifiers() -> None:
+    names = TableContract.declared_table_names(
+        database_name="Linear",
+        schema="public",
+        table_names=["LineItems", "Customers"],
+    )
+    assert names == ["customers", "lineitems"]
