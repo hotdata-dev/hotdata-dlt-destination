@@ -85,12 +85,7 @@ class HotdataClient:
             if not self.table_is_synced(database, table, schema=schema):
                 return []
             qualified_table = f"{database}.{schema}.{table}"
-            try:
-                result = self._runtime.execute_sql(f"SELECT * FROM {qualified_table}")
-            except RuntimeError as error:
-                if "not found" in str(error).lower():
-                    return []
-                raise
+            result = self._runtime.execute_sql(f"SELECT * FROM {qualified_table}")
             return result.to_records()
 
         return self._request_with_retry(operation)

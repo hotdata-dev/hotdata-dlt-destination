@@ -1,3 +1,5 @@
+import pytest
+
 from hotdata_dlt_destination.merge import (
     append_rows,
     combine_rows,
@@ -47,3 +49,23 @@ def test_combine_rows_merge_falls_back_to_hotdata_row_key() -> None:
         primary_key=None,
     )
     assert combined == [{"_hotdata_row_key": "a", "value": 2}]
+
+
+def test_combine_rows_append_extends_existing() -> None:
+    combined = combine_rows(
+        disposition="append",
+        existing=[{"id": 1}],
+        incoming=[{"id": 2}],
+        primary_key=["id"],
+    )
+    assert combined == [{"id": 1}, {"id": 2}]
+
+
+def test_combine_rows_rejects_unknown_disposition() -> None:
+    with pytest.raises(ValueError, match="Unsupported write_disposition 'appned'"):
+        combine_rows(
+            disposition="appned",
+            existing=[{"id": 1}],
+            incoming=[{"id": 2}],
+            primary_key=["id"],
+        )

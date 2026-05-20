@@ -4,6 +4,8 @@ from typing import Any
 
 from dlt.common.schema import TTableSchema
 
+SUPPORTED_WRITE_DISPOSITIONS = frozenset({"replace", "append", "merge", "upsert"})
+
 
 def resolve_write_disposition(table: TTableSchema, default: str) -> str:
     disposition = table.get("write_disposition") or default
@@ -60,4 +62,9 @@ def combine_rows(
     if disposition in ("merge", "upsert"):
         keys = primary_key or ["_hotdata_row_key"]
         return merge_rows(existing, incoming, primary_key=keys)
-    return append_rows(existing, incoming)
+    if disposition == "append":
+        return append_rows(existing, incoming)
+    raise ValueError(
+        f"Unsupported write_disposition {disposition!r}. "
+        f"Expected one of: {', '.join(sorted(SUPPORTED_WRITE_DISPOSITIONS))}"
+    )
