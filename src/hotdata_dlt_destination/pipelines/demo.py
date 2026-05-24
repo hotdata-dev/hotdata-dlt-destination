@@ -5,8 +5,8 @@ Downloads FRED economic indicator data directly from fred.stlouisfed.org
 and loads it into a Hotdata managed database.
 
 Resources loaded:
-  - macro_indicators_raw  (date, series, value -- long/tidy format)
-  - macro_wide            joined monthly series (1992 onward)
+  - macro_indicators_raw  (date, series, value -- long/tidy format, raw frequency)
+  - macro_wide            one row per month, all indicators as columns (1992 onward)
 
 Environment:
     HOTDATA_API_KEY    -- Hotdata API key
@@ -14,6 +14,7 @@ Environment:
 """
 from __future__ import annotations
 
+import functools
 import os
 
 import dlt
@@ -36,6 +37,7 @@ INDICATORS: dict[str, str] = {
 }
 
 
+@functools.cache
 def _download_indicator(name: str) -> pd.DataFrame:
     """Download a FRED series and return a DataFrame with columns (date, <name>)."""
     series_id = INDICATORS[name]
@@ -43,12 +45,23 @@ def _download_indicator(name: str) -> pd.DataFrame:
     return df.rename(columns={"observation_date": "date", series_id: name})
 
 
+def _to_monthly(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    """Resample a series to month-start frequency, taking the last value per month."""
+    return (
+        df.set_index("date")[name]
+        .resample("MS")
+        .last()
+        .dropna()
+        .reset_index()
+    )
+
+
 @dlt.resource(name="macro_indicators_raw", write_disposition="replace")
 def all_indicators_resource():
-    """Yields one row per (date, series, value) -- long/tidy format."""
+    """Yields one row per (date, series, value) -- long/tidy format at raw frequency."""
     rows: list[dict] = []
     for name in INDICATORS:
-        df = _download_indicator(name).dropna(subset=[name])
+        df = _download_indicator(name).copy().dropna(subset=[name])
         df["date"] = df["date"].astype(str)
         rows.extend(df.rename(columns={name: "value"}).assign(series=name).to_dict("records"))
     yield rows
@@ -56,8 +69,12 @@ def all_indicators_resource():
 
 @dlt.resource(name="macro_wide", write_disposition="replace")
 def macro_wide_resource():
-    """Yields one row per date with each indicator as its own column (inner-joined)."""
-    dfs = [_download_indicator(name) for name in INDICATORS]
+    """Yields one row per month with each indicator as its own column (inner-joined, 1992 onward).
+
+    All series are resampled to month-start before joining so that weekly
+    (MORTGAGE30US) and daily (T10Y2Y) series align with monthly ones.
+    """
+    dfs = [_to_monthly(_download_indicator(name), name) for name in INDICATORS]
     merged = dfs[0]
     for df in dfs[1:]:
         merged = merged.merge(df, on="date", how="inner")

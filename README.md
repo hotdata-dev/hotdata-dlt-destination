@@ -69,8 +69,8 @@ The demo pipeline downloads 9 FRED economic indicator series from `fred.stlouisf
 
 | Table | Description |
 |-------|-------------|
-| `macro_indicators_raw` | Long/tidy format — one row per `(date, series, value)` |
-| `macro_wide` | Wide format — one row per date, each indicator as its own column (inner-joined, 1992 onward) |
+| `macro_indicators_raw` | Long/tidy format — one row per `(date, series, value)` at raw FRED frequency |
+| `macro_wide` | Wide format — one row per month, all indicators as columns (resampled to month-start, inner-joined) |
 
 **Run it:**
 
@@ -134,6 +134,8 @@ retail_sales            412
 unemployment_rate       939
 yield_curve_spread    12491
 ```
+
+`macro_wide` has 411 rows — one per month from 1992 onward. Weekly (MORTGAGE30US) and daily (T10Y2Y) series are resampled to month-start before joining.
 
 Preview the wide table:
 
