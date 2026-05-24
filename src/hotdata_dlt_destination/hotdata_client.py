@@ -123,7 +123,7 @@ class HotdataClient:
                     continue
                 if isinstance(mapped_error, HotdataTransientError):
                     raise mapped_error from error
-                raise HotdataTerminalError(str(mapped_error)) from error
+                raise mapped_error from error
 
     @staticmethod
     def _classify_error(error: Exception) -> HotdataTerminalError | HotdataTransientError:
