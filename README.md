@@ -8,10 +8,7 @@
 - Managed-database ingestion through `hotdata-runtime` (`upload_parquet`, `load_managed_table`, `SELECT`)
 - Read-modify-write append/merge using only supported API operations
 - Deterministic batch and row idempotency keys
-- Example pipelines:
-  - `hotdata-dlt-basic-pipeline` (append)
-  - `hotdata-dlt-incremental-pipeline` (upsert/merge)
-  - `hotdata-dlt-linear-pipeline` (Linear issues → Hotdata)
+- Demo pipeline (`hotdata-dlt-demo`): downloads 9 FRED macro indicators and loads them into Hotdata
 - Unit tests in `tests/`
 - Architecture and runbook docs in `docs/`
 
@@ -66,27 +63,67 @@ pipeline.run(my_resource())
 
 Per-resource `write_disposition` and `primary_key` from dlt take precedence over the destination default.
 
+## Demo
+
+The demo pipeline downloads 9 FRED economic indicator series from `fred.stlouisfed.org` and loads two tables into a Hotdata managed database named `example_macro`:
+
+| Table | Description |
+|-------|-------------|
+| `macro_indicators_raw` | Long/tidy format — one row per `(date, series, value)` |
+| `macro_wide` | Wide format — one row per date, each indicator as its own column (inner-joined, 1992 onward) |
+
+**Run it:**
+
+```bash
+export HOTDATA_API_KEY=...
+export HOTDATA_WORKSPACE=...
+uv run hotdata-dlt-demo
+```
+
+```
+Pipeline macro_indicators load step completed in 1.44 seconds
+1 load package(s) were loaded to destination hotdata and into dataset None
+Load package 1779654466.552855 is LOADED and contains no failed jobs
+```
+
+**Verify with the Hotdata CLI:**
+
+```bash
+# Confirm the database was created
+hotdata databases list
+
+# Check both tables are synced
+hotdata databases tables list --database example_macro
+
+# Count rows per series in the long-format table
+hotdata query "SELECT series, COUNT(*) AS cnt FROM default.public.macro_indicators_raw GROUP BY series ORDER BY series" -d example_macro
+
+# Preview the wide table
+hotdata query "SELECT * FROM default.public.macro_wide ORDER BY date LIMIT 5" -d example_macro
+```
+
+Expected output for the row count query:
+
+```
+industrial_production  1288
+cpi                     951
+unemployment_rate       939
+fed_funds_rate          862
+housing_starts          808
+nonfarm_payroll        1048
+retail_sales            412
+mortgage_30yr          2878
+yield_curve_spread    12491
+```
+
 ## Developer workflow
 
 ```bash
 uv sync
 uv run ruff check .
 uv run pytest
-uv run hotdata-dlt-destination
-```
-
-Run pipelines:
-
-```bash
-uv run hotdata-dlt-basic-pipeline
-uv run hotdata-dlt-incremental-pipeline
-uv run hotdata-dlt-linear-pipeline
-```
-
-Run the live end-to-end integration test (requires Hotdata + Linear env vars):
-
-```bash
-uv run pytest tests/test_e2e_linear_hotdata.py -m integration
+uv run hotdata-dlt-destination  # validate config
+uv run hotdata-dlt-demo         # run the demo pipeline
 ```
 
 ## References
