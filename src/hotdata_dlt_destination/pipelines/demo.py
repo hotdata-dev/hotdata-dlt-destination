@@ -45,7 +45,7 @@ def _download_indicator(name: str) -> pd.DataFrame:
     series_id = INDICATORS[name]
     with urllib.request.urlopen(FRED_URL.format(series_id), timeout=30) as response:
         content = response.read().decode("utf-8")
-    df = pd.read_csv(io.StringIO(content), parse_dates=["observation_date"])
+    df = pd.read_csv(io.StringIO(content), parse_dates=["observation_date"], na_values=["."])
     return df.rename(columns={"observation_date": "date", series_id: name})
 
 
