@@ -33,11 +33,11 @@ def _augment_rows(
     *,
     table_name: str,
     items: TDataItems | str,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     rows = _load_batch_rows(items)
     batch_key = compute_batch_key(table_name, rows)
     loaded_at = datetime.now(UTC).isoformat()
-    augmented_rows = [
+    return [
         {
             **row,
             "_hotdata_batch_key": batch_key,
@@ -46,7 +46,6 @@ def _augment_rows(
         }
         for row in rows
     ]
-    return batch_key, augmented_rows
 
 
 def _declared_tables(
@@ -104,7 +103,7 @@ def hotdata_destination(
     )
     disposition = resolve_write_disposition(table, config.write_disposition)
     primary_key = resolve_primary_key(table)
-    _, batch_rows = _augment_rows(table_name=contract.table_name, items=items)
+    batch_rows = _augment_rows(table_name=contract.table_name, items=items)
 
     client = HotdataClient(
         api_key=config.api_key,
@@ -114,7 +113,7 @@ def hotdata_destination(
         retry_backoff_seconds=config.retry_backoff_seconds,
     )
 
-    parquet_path = ""
+    parquet_path: str | None = None
     try:
         client.ensure_managed_database(
             contract.database_name,
@@ -154,6 +153,9 @@ def hotdata_destination(
     except HotdataTerminalError as error:
         raise DestinationTerminalException(str(error)) from error
     finally:
-        if parquet_path:
-            os.unlink(parquet_path)
+        if parquet_path is not None:
+            try:
+                os.unlink(parquet_path)
+            except OSError:
+                pass
         client.close()

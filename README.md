@@ -8,10 +8,7 @@
 - Managed-database ingestion through `hotdata-runtime` (`upload_parquet`, `load_managed_table`, `SELECT`)
 - Read-modify-write append/merge using only supported API operations
 - Deterministic batch and row idempotency keys
-- Example pipelines:
-  - `hotdata-dlt-basic-pipeline` (append)
-  - `hotdata-dlt-incremental-pipeline` (upsert/merge)
-  - `hotdata-dlt-linear-pipeline` (Linear issues → Hotdata)
+- Demo pipeline (`hotdata-dlt-demo`): downloads 9 FRED macro indicators and loads them into Hotdata
 - Unit tests in `tests/`
 - Architecture and runbook docs in `docs/`
 
@@ -66,27 +63,96 @@ pipeline.run(my_resource())
 
 Per-resource `write_disposition` and `primary_key` from dlt take precedence over the destination default.
 
+## Demo
+
+The demo pipeline downloads 9 FRED economic indicator series from `fred.stlouisfed.org` and loads two tables into a Hotdata managed database named `example_macro`:
+
+| Table | Description |
+|-------|-------------|
+| `macro_indicators_raw` | Long/tidy format — one row per `(date, series, value)` at raw FRED frequency |
+| `macro_wide` | Wide format — one row per month, all indicators as columns (resampled to month-start, inner-joined) |
+
+**Run it:**
+
+```bash
+export HOTDATA_API_KEY=...
+export HOTDATA_WORKSPACE=...
+uv run hotdata-dlt-demo
+```
+
+```
+Pipeline macro_indicators load step completed in 1.44 seconds
+1 load package(s) were loaded to destination hotdata and into dataset None
+Load package 1779654466.552855 is LOADED and contains no failed jobs
+```
+
+**Verify with the Hotdata CLI:**
+
+After the pipeline completes, use the `hotdata` CLI to confirm the data landed.
+
+List databases to find the one dlt created:
+
+```bash
+hotdata databases list
+```
+
+```
+example_macro   dbid2lq2co5zqruhusjpmgkfmv2eug
+...
+```
+
+Check that both tables are synced (`synced: true` means the parquet was loaded and is queryable):
+
+```bash
+hotdata databases tables list --database example_macro
+```
+
+```
+TABLE                        SYNCED  LAST_SYNC
+default.public.macro_indicators_raw  true    2026-05-24 20:27
+default.public.macro_wide            true    2026-05-24 20:27
+```
+
+Query the loaded data — table names follow the pattern `default.public.<table>`:
+
+```bash
+hotdata query \
+  "SELECT series, COUNT(*) AS cnt
+   FROM default.public.macro_indicators_raw
+   GROUP BY series ORDER BY series" \
+  -d example_macro
+```
+
+```
+cpi                     951
+fed_funds_rate          862
+housing_starts          808
+industrial_production  1288
+mortgage_30yr          2878
+nonfarm_payroll        1048
+retail_sales            412
+unemployment_rate       939
+yield_curve_spread    12491
+```
+
+`macro_wide` has 411 rows — one per month from 1992 onward. Weekly (MORTGAGE30US) and daily (T10Y2Y) series are resampled to month-start before joining.
+
+Preview the wide table:
+
+```bash
+hotdata query \
+  "SELECT * FROM default.public.macro_wide ORDER BY date LIMIT 5" \
+  -d example_macro
+```
+
 ## Developer workflow
 
 ```bash
 uv sync
 uv run ruff check .
 uv run pytest
-uv run hotdata-dlt-destination
-```
-
-Run pipelines:
-
-```bash
-uv run hotdata-dlt-basic-pipeline
-uv run hotdata-dlt-incremental-pipeline
-uv run hotdata-dlt-linear-pipeline
-```
-
-Run the live end-to-end integration test (requires Hotdata + Linear env vars):
-
-```bash
-uv run pytest tests/test_e2e_linear_hotdata.py -m integration
+uv run hotdata-dlt-destination  # validate config
+uv run hotdata-dlt-demo         # run the demo pipeline
 ```
 
 ## References

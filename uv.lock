@@ -242,6 +242,7 @@ dependencies = [
     { name = "dlt" },
     { name = "hotdata" },
     { name = "hotdata-runtime" },
+    { name = "pandas" },
     { name = "pyarrow" },
 ]
 
@@ -256,6 +257,7 @@ requires-dist = [
     { name = "dlt", specifier = ">=1.26.0" },
     { name = "hotdata", specifier = ">=0.2.2" },
     { name = "hotdata-runtime", specifier = ">=0.2.0" },
+    { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=14" },
 ]
 

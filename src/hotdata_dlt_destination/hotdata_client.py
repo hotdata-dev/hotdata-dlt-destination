@@ -4,7 +4,6 @@ import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from hotdata.rest import ApiException
 from hotdata_runtime.client import HotdataClient as RuntimeClient
 from hotdata_runtime.databases import LoadManagedTableResult, ManagedDatabase
 
@@ -84,7 +83,7 @@ class HotdataClient:
         def operation() -> list[dict[str, Any]]:
             if not self.table_is_synced(database, table, schema=schema):
                 return []
-            qualified_table = f"{database}.{schema}.{table}"
+            qualified_table = f'"{database}"."{schema}"."{table}"'
             result = self._runtime.execute_sql(f"SELECT * FROM {qualified_table}")
             return result.to_records()
 
@@ -110,6 +109,8 @@ class HotdataClient:
             )
         )
 
+    _MAX_BACKOFF_SECONDS = 30.0
+
     def _request_with_retry(self, operation: Callable[[], T]) -> T:
         for attempt in range(1, self._max_retries + 1):
             try:
@@ -117,21 +118,11 @@ class HotdataClient:
             except Exception as error:
                 mapped_error = self._classify_error(error)
                 if isinstance(mapped_error, HotdataTransientError) and attempt < self._max_retries:
-                    time.sleep(self._retry_backoff_seconds * attempt)
+                    backoff = min(self._retry_backoff_seconds * attempt, self._MAX_BACKOFF_SECONDS)
+                    time.sleep(backoff)
                     continue
-                if isinstance(mapped_error, HotdataTransientError):
-                    raise mapped_error from error
-                raise HotdataTerminalError(str(mapped_error)) from error
-
-        raise HotdataTerminalError("Unexpected retry state")
+                raise mapped_error from error
 
     @staticmethod
-    def _classify_error(error: Exception) -> Exception:
-        cause = error.__cause__ or error
-        if isinstance(cause, ApiException):
-            return classify_sdk_error(cause)
-        if isinstance(error, ApiException):
-            return classify_sdk_error(error)
-        if isinstance(error, (TimeoutError, ConnectionError)):
-            return classify_sdk_error(error)
-        return classify_sdk_error(error)
+    def _classify_error(error: Exception) -> HotdataTerminalError | HotdataTransientError:
+        return classify_sdk_error(error.__cause__ or error)
