@@ -1,162 +1,154 @@
 # hotdata-dlt-destination
 
-`hotdata-dlt-destination` is a Python package that implements a custom [dlt destination](https://dlthub.com/docs/dlt-ecosystem/destinations/destination) for loading data into **Hotdata managed databases** with deterministic idempotency keys and explicit write semantics.
+Load data into [Hotdata](https://hotdata.dev) managed databases using [dlt](https://dlthub.com).
 
-## What this repo includes
+dlt handles extraction, schema inference, and batching. This package handles the Hotdata side — uploading each batch as Parquet and registering it with your managed database.
 
-- Custom destination via `@dlt.destination` in `src/hotdata_dlt_destination/destination.py`
-- Managed-database ingestion through `hotdata-runtime` (`upload_parquet`, `load_managed_table`, `SELECT`)
-- Read-modify-write append/merge using only supported API operations
-- Deterministic batch and row idempotency keys
-- Demo pipeline (`hotdata-dlt-demo`): downloads 9 FRED macro indicators and loads them into Hotdata
-- Unit tests in `tests/`
-- Architecture and runbook docs in `docs/`
+## Install
 
-## Data contract defaults
-
-- Managed database: `database_name` (default `dlt`, created on first load when missing)
-- Schema: `public`
-- Table name: normalized lowercase dlt table identifier
-- Nested table names: `{parent}__{child}`
-- Write semantics (all use `load_managed_table(replace)` under the hood):
-  - `replace`: upload batch parquet and replace the target table
-  - `append`: read existing target rows, append batch in Python, replace target
-  - `upsert`/`merge`: read existing rows, upsert by dlt `primary_key` (or `_hotdata_row_key`), replace target
-- Idempotency:
-  - Batch key `_hotdata_batch_key` = hash(table + full batch payload)
-  - Row key `_hotdata_row_key` = hash(table + canonical row payload)
-
-## Configure
-
-Set environment variables (or pass destination kwargs / dlt secrets):
-
-- `HOTDATA_API_KEY`
-- `HOTDATA_WORKSPACE`
-- `HOTDATA_DATABASE` (managed database name, default `dlt`)
-- optional: `HOTDATA_SCHEMA`, `HOTDATA_WRITE_DISPOSITION`, `HOTDATA_DECLARED_TABLES`, retry tuning
-
-For pipelines with multiple tables, declare every target table when the managed database is first created:
-
-```python
-hotdata_destination(
-    database_name="analytics",
-    declared_tables=["customers", "orders", "orders__items"],
-)
+```bash
+pip install hotdata-dlt-destination
 ```
 
-## Usage
+## Quickstart
 
 ```python
 import dlt
 from hotdata_dlt_destination import hotdata_destination
 
+@dlt.resource(name="orders", write_disposition="append")
+def orders_resource():
+    yield [
+        {"id": 1, "customer": "Alice", "total": 99.00},
+        {"id": 2, "customer": "Bob",   "total": 49.50},
+    ]
+
 pipeline = dlt.pipeline(
     pipeline_name="my_pipeline",
     destination=hotdata_destination(
-        database_name="analytics",
-        write_disposition="append",
-        declared_tables=["customers"],
+        database_name="sales",
+        declared_tables=["orders"],
     ),
 )
-pipeline.run(my_resource())
+
+pipeline.run(orders_resource())
 ```
 
-Per-resource `write_disposition` and `primary_key` from dlt take precedence over the destination default.
-
-## Demo
-
-The demo pipeline downloads 9 FRED economic indicator series from `fred.stlouisfed.org` and loads two tables into a Hotdata managed database named `example_macro`:
-
-| Table | Description |
-|-------|-------------|
-| `macro_indicators_raw` | Long/tidy format — one row per `(date, series, value)` at raw FRED frequency |
-| `macro_wide` | Wide format — one row per month, all indicators as columns (resampled to month-start, inner-joined) |
-
-**Run it:**
+Set your credentials as environment variables before running:
 
 ```bash
-export HOTDATA_API_KEY=...
-export HOTDATA_WORKSPACE=...
+export HOTDATA_API_KEY=your_api_key
+export HOTDATA_WORKSPACE=your_workspace_id
+```
+
+That's it. On first run, the `sales` managed database is created automatically and the `orders` table is loaded.
+
+## Configuration
+
+| Parameter | Env variable | Default | Description |
+|-----------|-------------|---------|-------------|
+| `api_key` | `HOTDATA_API_KEY` | required | Your Hotdata API key |
+| `workspace_id` | `HOTDATA_WORKSPACE` | required | Your Hotdata workspace ID |
+| `database_name` | `HOTDATA_DATABASE` | `dlt` | Managed database to load into |
+| `schema` | `HOTDATA_SCHEMA` | `public` | Schema within the managed database |
+| `write_disposition` | `HOTDATA_WRITE_DISPOSITION` | `append` | Default write mode (see below) |
+| `declared_tables` | `HOTDATA_DECLARED_TABLES` | — | All table names the pipeline will write (required for multi-table pipelines — see below) |
+| `create_database_if_missing` | — | `True` | Create the managed database if it doesn't exist yet |
+| `max_retries` | `HOTDATA_MAX_RETRIES` | `5` | How many times to retry a failed request |
+| `retry_backoff_seconds` | `HOTDATA_RETRY_BACKOFF_SECONDS` | `1.0` | Initial wait between retries (grows with each attempt) |
+
+You can pass any of these as keyword arguments to `hotdata_destination(...)`, or set the corresponding environment variable.
+
+## Write modes
+
+Each resource can control how its data lands in the table:
+
+| Mode | What it does |
+|------|-------------|
+| `replace` | Deletes everything in the table and loads the new batch. Good for full refreshes. |
+| `append` | Adds new rows to the table without touching existing data. Good for event logs and immutable records. |
+| `merge` (or `upsert`) | Updates existing rows by primary key, inserts new ones. Good for syncing a source of truth. |
+
+Set the default for all resources on the destination:
+
+```python
+hotdata_destination(write_disposition="replace", ...)
+```
+
+Or set it per resource — this takes priority:
+
+```python
+@dlt.resource(name="customers", write_disposition="merge", primary_key="id")
+def customers_resource():
+    ...
+```
+
+## Multiple tables
+
+When a pipeline writes to more than one table, pass all table names to `declared_tables`. Hotdata needs to know the full list upfront to set up the managed database correctly.
+
+```python
+pipeline = dlt.pipeline(
+    pipeline_name="ecommerce",
+    destination=hotdata_destination(
+        database_name="ecommerce",
+        declared_tables=["customers", "orders", "products"],
+    ),
+)
+
+pipeline.run([customers_resource(), orders_resource(), products_resource()])
+```
+
+If you add a new table later, include it in `declared_tables` on the next run.
+
+## Verify a load
+
+After a pipeline runs, use the [Hotdata CLI](https://github.com/hotdata-dev/sdk-python) to check that the data landed:
+
+```bash
+# List your managed databases
+hotdata databases list
+
+# Check that tables are loaded and queryable
+hotdata databases tables list --database sales
+
+# Query the data
+hotdata query "SELECT * FROM public.orders LIMIT 5" -d sales
+```
+
+## Demo pipeline
+
+The package includes a demo that downloads 9 macro-economic indicators from the Federal Reserve (FRED) and loads them into Hotdata. It's a good reference for how a real pipeline is structured.
+
+```bash
+export HOTDATA_API_KEY=your_api_key
+export HOTDATA_WORKSPACE=your_workspace_id
 uv run hotdata-dlt-demo
 ```
 
-```
-Pipeline macro_indicators load step completed in 1.44 seconds
-1 load package(s) were loaded to destination hotdata and into dataset None
-Load package 1779654466.552855 is LOADED and contains no failed jobs
-```
+This creates a `example_macro` database with two tables:
 
-**Verify with the Hotdata CLI:**
+- `macro_indicators_raw` — one row per `(date, series, value)`, all 9 series at their original frequency
+- `macro_wide` — one row per month from 1992 onward, each indicator as its own column
 
-After the pipeline completes, use the `hotdata` CLI to confirm the data landed.
+## How it works
 
-List databases to find the one dlt created:
+Each pipeline run:
 
-```bash
-hotdata databases list
-```
+1. dlt serializes your data to Parquet
+2. The Parquet file is uploaded to Hotdata
+3. `load_managed_table` replaces the target table with the new data
 
-```
-example_macro   dbid2lq2co5zqruhusjpmgkfmv2eug
-...
-```
+For `append` and `merge`, the destination reads the current table contents first, merges in Python, then writes the combined result back. This is done transparently — your resource just yields rows.
 
-Check that both tables are synced (`synced: true` means the parquet was loaded and is queryable):
+Every row gets two metadata columns added automatically:
 
-```bash
-hotdata databases tables list --database example_macro
-```
+- `_hotdata_batch_key` — identifies which pipeline run the row came from
+- `_hotdata_row_key` — a stable hash of the row's content, useful for deduplication
 
-```
-TABLE                        SYNCED  LAST_SYNC
-default.public.macro_indicators_raw  true    2026-05-24 20:27
-default.public.macro_wide            true    2026-05-24 20:27
-```
-
-Query the loaded data — table names follow the pattern `default.public.<table>`:
-
-```bash
-hotdata query \
-  "SELECT series, COUNT(*) AS cnt
-   FROM default.public.macro_indicators_raw
-   GROUP BY series ORDER BY series" \
-  -d example_macro
-```
-
-```
-cpi                     951
-fed_funds_rate          862
-housing_starts          808
-industrial_production  1288
-mortgage_30yr          2878
-nonfarm_payroll        1048
-retail_sales            412
-unemployment_rate       939
-yield_curve_spread    12491
-```
-
-`macro_wide` has 411 rows — one per month from 1992 onward. Weekly (MORTGAGE30US) and daily (T10Y2Y) series are resampled to month-start before joining.
-
-Preview the wide table:
-
-```bash
-hotdata query \
-  "SELECT * FROM default.public.macro_wide ORDER BY date LIMIT 5" \
-  -d example_macro
-```
-
-## Developer workflow
-
-```bash
-uv sync
-uv run ruff check .
-uv run pytest
-uv run hotdata-dlt-destination  # validate config
-uv run hotdata-dlt-demo         # run the demo pipeline
-```
-
-## References
+## Resources
 
 - [Hotdata Python SDK](https://github.com/hotdata-dev/sdk-python)
 - [hotdata-runtime](https://github.com/hotdata-dev/hotdata-runtime)
-- [dlt custom destination](https://dlthub.com/docs/dlt-ecosystem/destinations/destination)
+- [dlt documentation](https://dlthub.com/docs)
+- [Architecture and runbook](docs/runbook.md)
