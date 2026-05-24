@@ -121,8 +121,6 @@ class HotdataClient:
                     backoff = min(self._retry_backoff_seconds * attempt, self._MAX_BACKOFF_SECONDS)
                     time.sleep(backoff)
                     continue
-                if isinstance(mapped_error, HotdataTransientError):
-                    raise mapped_error from error
                 raise mapped_error from error
 
     @staticmethod
