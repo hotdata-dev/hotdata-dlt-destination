@@ -5,7 +5,13 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 import pyarrow as pa
+from hotdata.api.query_api import QueryApi
+from hotdata.api.query_runs_api import QueryRunsApi
+from hotdata.api.results_api import ResultsApi
 from hotdata.arrow import ResultsApi as ArrowResultsApi
+from hotdata.models.async_query_response import AsyncQueryResponse
+from hotdata.models.query_request import QueryRequest
+from hotdata.models.query_response import QueryResponse
 from hotdata_runtime.client import HotdataClient as RuntimeClient
 from hotdata_runtime.databases import LoadManagedTableResult, ManagedDatabase
 
@@ -84,27 +90,73 @@ class HotdataClient:
     ) -> pa.Table | None:
         """Fetch table contents as an Arrow table.
 
-        Returns None when the table has never been loaded or has no rows.
-        Uses Arrow IPC when the query returns an async result_id (avoiding
-        JSON serialization overhead for large tables); falls back to the
-        inline JSON response for small/sync results.
+        Returns None when the table has never been loaded.
+        Queries are scoped to the managed database via the X-Database-Id
+        header; inside that scope the table is always at "default".<schema>.<table>.
+        Uses Arrow IPC for the result download (avoiding JSON overhead).
         """
         def operation() -> pa.Table | None:
             if not self.table_is_synced(database, table, schema=schema):
                 return None
-            qualified_table = f'"{database}"."{schema}"."{table}"'
-            result = self._runtime.execute_sql(f"SELECT * FROM {qualified_table}")
-
-            result_id = getattr(result, "result_id", None)
-            if result_id:
-                arrow_api = ArrowResultsApi(self._runtime.api)
-                return arrow_api.get_result_arrow(result_id)
-
-            # Inline sync response: convert JSON rows to Arrow
-            records = result.to_records()
-            return pa.Table.from_pylist(records) if records else None
+            db = self._runtime.resolve_managed_database(database)
+            sql = f'SELECT * FROM "default"."{schema}"."{table}"'
+            result_id = self._query_database_scoped(sql, database_id=db.id)
+            if result_id is None:
+                return None
+            return ArrowResultsApi(self._runtime.api).get_result_arrow(result_id)
 
         return self._request_with_retry(operation)
+
+    _QUERY_TIMEOUT_SECONDS = 300.0
+
+    def _query_database_scoped(self, sql: str, *, database_id: str) -> str | None:
+        """Execute SQL scoped to a managed database; return the result_id.
+
+        Passes the X-Database-Id header so that "default".<schema>.<table>
+        resolves to the managed database's built-in catalog.  Polls until
+        completion for async responses.
+        """
+        raw = QueryApi(self._runtime.api).query(
+            QueryRequest(sql=sql),
+            x_database_id=database_id,
+        )
+        if isinstance(raw, QueryResponse):
+            return raw.result_id
+
+        if isinstance(raw, AsyncQueryResponse):
+            runs = QueryRunsApi(self._runtime.api)
+            deadline = time.monotonic() + self._QUERY_TIMEOUT_SECONDS
+            result_id: str | None = None
+            while time.monotonic() < deadline:
+                run = runs.get_query_run(raw.query_run_id)
+                if run.status == "succeeded":
+                    result_id = run.result_id
+                    break
+                if run.status in ("failed", "cancelled"):
+                    raise RuntimeError(run.error_message or f"Query {run.status}")
+                time.sleep(0.5)
+            else:
+                raise TimeoutError(
+                    f"Managed database query timed out after {self._QUERY_TIMEOUT_SECONDS}s"
+                )
+            return self._wait_result_ready(result_id)
+
+        return None
+
+    def _wait_result_ready(self, result_id: str | None) -> str | None:
+        """Poll result status until ready; return result_id once ready."""
+        if result_id is None:
+            return None
+        results = ResultsApi(self._runtime.api)
+        deadline = time.monotonic() + self._QUERY_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            r = results.get_result(result_id)
+            if r.status == "ready":
+                return result_id
+            if r.status in ("failed", "cancelled"):
+                raise RuntimeError(r.error_message or f"Result {r.status}")
+            time.sleep(0.3)
+        raise TimeoutError(f"Result {result_id} not ready after {self._QUERY_TIMEOUT_SECONDS}s")
 
     def fetch_table_rows(
         self,

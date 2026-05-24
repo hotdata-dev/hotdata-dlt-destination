@@ -88,18 +88,54 @@ def test_fetch_table_rows_skips_unsynced_tables() -> None:
 
 
 def test_fetch_table_rows_reads_synced_table() -> None:
+    import pyarrow as pa
+
+    # Patch module-level QueryApi and ArrowResultsApi so no real HTTP happens.
+    from hotdata.models.query_response import QueryResponse as _QR
+
+    import hotdata_dlt_destination.hotdata_client as _mod
+
+    class FakeQueryApi:
+        def __init__(self, api):
+            pass
+
+        def query(self, request, *, x_database_id):
+            assert x_database_id == "db_1"
+            assert 'SELECT * FROM "default"."public"."orders"' in request.sql
+            return _QR(
+                columns=["id", "name"],
+                rows=[[1, "alpha"]],
+                row_count=1,
+                nullable=[False, False],
+                result_id="result_1",
+                query_run_id="qrun_1",
+                execution_time_ms=1,
+            )
+
+    class FakeArrowResultsApi:
+        def __init__(self, api):
+            pass
+
+        def get_result_arrow(self, result_id):
+            assert result_id == "result_1"
+            return pa.table({"id": [1], "name": ["alpha"]})
+
     class FakeRuntime:
+        api = None
+
         def list_managed_tables(self, database: str, *, schema: str):
             return [SimpleNamespace(table="orders", synced=True)]
 
-        def execute_sql(self, sql: str):
-            assert sql == 'SELECT * FROM "dlt"."public"."orders"'
-            return SimpleNamespace(
-                to_records=lambda: [{"id": 1, "name": "alpha"}],
-            )
+        def resolve_managed_database(self, name):
+            return SimpleNamespace(id="db_1")
 
         def close(self) -> None:
             return None
+
+    orig_query_api = _mod.QueryApi
+    orig_arrow_api = _mod.ArrowResultsApi
+    _mod.QueryApi = FakeQueryApi  # noqa: SLF001
+    _mod.ArrowResultsApi = FakeArrowResultsApi  # noqa: SLF001
 
     client = HotdataClient(
         api_key="k",
@@ -110,8 +146,12 @@ def test_fetch_table_rows_reads_synced_table() -> None:
     )
     client._runtime = FakeRuntime()  # noqa: SLF001
 
-    rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
-    assert rows == [{"id": 1, "name": "alpha"}]
+    try:
+        rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
+        assert rows == [{"id": 1, "name": "alpha"}]
+    finally:
+        _mod.QueryApi = orig_query_api
+        _mod.ArrowResultsApi = orig_arrow_api
     client.close()
 
 
