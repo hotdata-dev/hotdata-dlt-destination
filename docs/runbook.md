@@ -25,31 +25,13 @@
 
 ## Run pipelines
 
-- Basic smoke pipeline:
+- Demo pipeline (downloads FRED macro-economic data and loads into Hotdata):
 
   ```bash
-  uv run hotdata-dlt-basic-pipeline
+  uv run hotdata-dlt-demo
   ```
 
-- Incremental/upsert pipeline:
-
-  ```bash
-  uv run hotdata-dlt-incremental-pipeline
-  ```
-
-- Linear source end-to-end pipeline:
-
-  ```bash
-  uv run hotdata-dlt-linear-pipeline
-  ```
-
-## Run integration test
-
-Run the live test only when credentials are available:
-
-```bash
-uv run pytest tests/test_e2e_linear_hotdata.py -m integration
-```
+  Requires `HOTDATA_API_KEY` and `HOTDATA_WORKSPACE` to be set.
 
 ## Add a new pipeline
 

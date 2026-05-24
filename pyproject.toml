@@ -11,6 +11,7 @@ dependencies = [
     "dlt>=1.26.0",
     "hotdata>=0.2.2",
     "hotdata-runtime>=0.2.0",
+    "pandas>=2.0",
     "pyarrow>=14",
 ]
 
