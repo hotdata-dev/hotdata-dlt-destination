@@ -1,6 +1,6 @@
 [project]
 name = "hotdata-dlt-destination"
-version = "0.3.0"
+version = "0.3.1"
 description = "dlt destination for loading data into Hotdata managed databases."
 readme = "README.md"
 authors = [
@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "dlt>=1.26.0",
     "hotdata>=0.2.2",
-    "hotdata-runtime>=0.1.1",
+    "hotdata-runtime>=0.2.0",
     "pyarrow>=14",
 ]
 

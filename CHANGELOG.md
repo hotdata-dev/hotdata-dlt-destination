@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.3.1] - 2026-05-24
+
+### Changed
+
+- Require `hotdata-runtime>=0.2.0`.
+- Pass `description` as a keyword argument to `create_managed_database` to match the updated `hotdata-runtime` 0.2.0 API.
+
 ## [0.3.0] - 2026-05-20
 
 ### Changed
