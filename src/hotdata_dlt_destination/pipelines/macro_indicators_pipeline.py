@@ -27,10 +27,12 @@ Environment:
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import dlt
 import ibis
+import pandas as pd
 
 from hotdata_dlt_destination.destination import hotdata_destination
 
@@ -87,6 +89,8 @@ def all_indicators_resource():
     for name, (filename, raw_col) in INDICATORS.items():
         df = _read_indicator(con, name).execute()
         for _, row in df.iterrows():
+            if pd.isna(row[name]):
+                continue
             rows.append({
                 "date": str(row["date"]),
                 "series": name,
@@ -127,6 +131,8 @@ def main() -> None:
     pipeline = dlt.pipeline(
         pipeline_name="macro_indicators",
         destination=hotdata_destination(
+            api_key=os.environ["HOTDATA_API_KEY"],
+            workspace_id=os.environ["HOTDATA_WORKSPACE"],
             write_disposition="replace",
             declared_tables=all_tables,
             database_name="example_macro",
