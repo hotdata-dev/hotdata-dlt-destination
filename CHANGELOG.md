@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.3.3] - 2026-05-24
+
+### Added
+
+- Arrow-native write path: `pq.read_table()` delivers a `pa.Table` directly; metadata columns appended with `append_column()` — no `from_pylist()` reconstruction. `to_pylist()` called once only for SHA256 idempotency key computation.
+- Arrow-native read path: `fetch_table()` returns a `pa.Table` via `hotdata.arrow.ResultsApi.get_result_arrow()` (Arrow IPC) instead of JSON rows.
+- `_query_database_scoped()`: passes `X-Database-Id` header so SQL resolves to `"default".<schema>.<table>` inside a managed database's catalog.
+- `_wait_result_ready()`: polls `ResultsApi` until a result leaves `processing` state before calling `get_result_arrow`.
+- `combine_tables()` in `merge.py`: Arrow-native combine for replace, append (`pa.concat_tables`), and merge/upsert dispositions.
+- `pa.concat_tables` uses `promote_options="permissive"` so schema drift between batches fills missing columns with nulls.
+- Comprehensive `combine_tables` test coverage: replace, append with schema drift, merge by primary key, upsert, `_hotdata_row_key` fallback, `None`/empty existing.
+- `scripts/load_test.py`: end-to-end load test — creates N managed databases with synthetic Parquet data, uploads, loads, queries via Arrow IPC, and reports per-phase timing stats (mean, p50, p95, min, max, rows/s).
+- `uv lock` now runs automatically during `scripts/release.sh prepare` to keep the lockfile in sync with version bumps.
+
+### Changed
+
+- `fetch_table_rows()` delegates to `fetch_table()` and calls `.to_pylist()` on the result.
+- `write_table_parquet()` is now the sole Parquet write helper in `parquet.py`.
+- README rewritten for a developer audience: quickstart, configuration table, write modes, multi-table setup, and demo walkthrough.
+
+### Removed
+
+- `read_parquet_rows()` and `write_rows_parquet()` from `parquet.py` (replaced by Arrow-native path).
+- `combine_rows()` and `append_rows()` from `merge.py` (replaced by `combine_tables()`).
+
+### Fixed
+
+- Managed-database queries now pass the `X-Database-Id` header; previously all queries returned 400 errors for non-replace dispositions.
+- `get_result_arrow` no longer raises `ResultNotReadyError` — `_wait_result_ready()` polls until the result is ready before fetching.
+
 ## [0.3.2] - 2026-05-24
 
 ### Added
