@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pyarrow as pa
 from dlt.common.schema import TTableSchema
 
 SUPPORTED_WRITE_DISPOSITIONS = frozenset({"replace", "append", "merge", "upsert"})
@@ -31,13 +32,6 @@ def row_key(row: dict[str, Any], keys: list[str]) -> tuple[Any, ...]:
     return values
 
 
-def append_rows(
-    existing: list[dict[str, Any]],
-    incoming: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    return [*existing, *incoming]
-
-
 def merge_rows(
     existing: list[dict[str, Any]],
     incoming: list[dict[str, Any]],
@@ -56,20 +50,24 @@ def merge_rows(
     return merged
 
 
-def combine_rows(
+def combine_tables(
     *,
     disposition: str,
-    existing: list[dict[str, Any]],
-    incoming: list[dict[str, Any]],
+    existing: pa.Table | None,
+    incoming: pa.Table,
     primary_key: list[str] | None,
-) -> list[dict[str, Any]]:
-    if disposition == "replace":
+) -> pa.Table:
+    """Arrow-native combine: avoids dict round-trip for replace and append."""
+    if disposition == "replace" or existing is None or len(existing) == 0:
         return incoming
+    if disposition == "append":
+        # "permissive" fills missing columns with nulls so schema drift between
+        # the existing table and the incoming batch doesn't raise an error.
+        return pa.concat_tables([existing, incoming], promote_options="permissive")
     if disposition in ("merge", "upsert"):
         keys = primary_key or ["_hotdata_row_key"]
-        return merge_rows(existing, incoming, primary_key=keys)
-    if disposition == "append":
-        return append_rows(existing, incoming)
+        merged = merge_rows(existing.to_pylist(), incoming.to_pylist(), primary_key=keys)
+        return pa.Table.from_pylist(merged)
     raise ValueError(
         f"Unsupported write_disposition {disposition!r}. "
         f"Expected one of: {', '.join(sorted(SUPPORTED_WRITE_DISPOSITIONS))}"

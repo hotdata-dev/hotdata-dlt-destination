@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import tempfile
 from datetime import UTC, datetime
-from typing import Any
 
 import dlt
+import pyarrow as pa
+import pyarrow.parquet as pq
 from dlt.common.destination.exceptions import DestinationTerminalException
 from dlt.common.schema import TTableSchema
 from dlt.common.typing import TDataItems
@@ -16,36 +17,39 @@ from hotdata_dlt_destination.errors import HotdataTerminalError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 from hotdata_dlt_destination.idempotency import compute_batch_key, compute_row_key
 from hotdata_dlt_destination.merge import (
-    combine_rows,
+    combine_tables,
     resolve_primary_key,
     resolve_write_disposition,
 )
-from hotdata_dlt_destination.parquet import read_parquet_rows, write_rows_parquet
+from hotdata_dlt_destination.parquet import write_table_parquet
 
 
-def _load_batch_rows(items: TDataItems | str) -> list[dict[str, Any]]:
-    if isinstance(items, str):
-        return read_parquet_rows(items)
-    return [dict(item) for item in items]
-
-
-def _augment_rows(
+def _augment_table(
     *,
     table_name: str,
     items: TDataItems | str,
-) -> list[dict[str, Any]]:
-    rows = _load_batch_rows(items)
+) -> pa.Table:
+    # With loader_file_format="parquet" dlt always passes a file path; the
+    # else branch is a defensive fallback for callers that pass dicts directly.
+    if isinstance(items, str):
+        table = pq.read_table(items)
+    else:
+        rows = [dict(item) for item in items]
+        table = pa.Table.from_pylist(rows) if rows else pa.table({})
+
+    # to_pylist() is called once to produce the row dicts needed for
+    # deterministic hash computation. The table itself is not reconstructed
+    # from dicts — metadata columns are appended directly instead.
+    rows = table.to_pylist()
     batch_key = compute_batch_key(table_name, rows)
     loaded_at = datetime.now(UTC).isoformat()
-    return [
-        {
-            **row,
-            "_hotdata_batch_key": batch_key,
-            "_hotdata_row_key": compute_row_key(table_name, row),
-            "_hotdata_loaded_at": loaded_at,
-        }
-        for row in rows
-    ]
+    row_keys = [compute_row_key(table_name, row) for row in rows]
+
+    n = len(table)
+    table = table.append_column("_hotdata_batch_key", pa.array([batch_key] * n, type=pa.string()))
+    table = table.append_column("_hotdata_row_key", pa.array(row_keys, type=pa.string()))
+    table = table.append_column("_hotdata_loaded_at", pa.array([loaded_at] * n, type=pa.string()))
+    return table
 
 
 def _declared_tables(
@@ -103,7 +107,7 @@ def hotdata_destination(
     )
     disposition = resolve_write_disposition(table, config.write_disposition)
     primary_key = resolve_primary_key(table)
-    batch_rows = _augment_rows(table_name=contract.table_name, items=items)
+    batch_table = _augment_table(table_name=contract.table_name, items=items)
 
     client = HotdataClient(
         api_key=config.api_key,
@@ -125,23 +129,23 @@ def hotdata_destination(
             create_if_missing=config.create_database_if_missing,
         )
 
-        rows_to_load = batch_rows
+        table_to_load = batch_table
         if disposition != "replace":
-            existing_rows = client.fetch_table_rows(
+            existing_table = client.fetch_table(
                 database=contract.database_name,
                 schema=contract.schema,
                 table=contract.table_name,
             )
-            rows_to_load = combine_rows(
+            table_to_load = combine_tables(
                 disposition=disposition,
-                existing=existing_rows,
-                incoming=batch_rows,
+                existing=existing_table,
+                incoming=batch_table,
                 primary_key=primary_key,
             )
 
         with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as handle:
             parquet_path = handle.name
-        write_rows_parquet(rows_to_load, parquet_path)
+        write_table_parquet(table_to_load, parquet_path)
 
         upload_id = client.upload_parquet(parquet_path)
         client.load_managed_table(

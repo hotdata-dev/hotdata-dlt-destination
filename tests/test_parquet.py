@@ -1,10 +1,13 @@
-from hotdata_dlt_destination.parquet import read_parquet_rows, write_rows_parquet
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from hotdata_dlt_destination.parquet import write_table_parquet
 
 
-def test_write_rows_parquet_roundtrip(tmp_path) -> None:
+def test_write_table_parquet_roundtrip(tmp_path) -> None:
     path = tmp_path / "rows.parquet"
-    rows = [{"id": 1, "name": "Acme"}, {"id": 2, "name": "Globex"}]
-    write_rows_parquet(rows, path)
+    table = pa.table({"id": [1, 2], "name": ["Acme", "Globex"]})
+    write_table_parquet(table, path)
     assert path.exists()
     assert path.stat().st_size > 0
-    assert read_parquet_rows(path) == rows
+    assert pq.read_table(path).to_pylist() == table.to_pylist()
