@@ -88,32 +88,59 @@ Load package 1779654466.552855 is LOADED and contains no failed jobs
 
 **Verify with the Hotdata CLI:**
 
+After the pipeline completes, use the `hotdata` CLI to confirm the data landed.
+
+List databases to find the one dlt created:
+
 ```bash
-# Confirm the database was created
 hotdata databases list
+```
 
-# Check both tables are synced
+```
+example_macro   dbid2lq2co5zqruhusjpmgkfmv2eug
+...
+```
+
+Check that both tables are synced (`synced: true` means the parquet was loaded and is queryable):
+
+```bash
 hotdata databases tables list --database example_macro
-
-# Count rows per series in the long-format table
-hotdata query "SELECT series, COUNT(*) AS cnt FROM default.public.macro_indicators_raw GROUP BY series ORDER BY series" -d example_macro
-
-# Preview the wide table
-hotdata query "SELECT * FROM default.public.macro_wide ORDER BY date LIMIT 5" -d example_macro
 ```
 
-Expected output for the row count query:
+```
+TABLE                        SYNCED  LAST_SYNC
+default.public.macro_indicators_raw  true    2026-05-24 20:27
+default.public.macro_wide            true    2026-05-24 20:27
+```
+
+Query the loaded data — table names follow the pattern `default.public.<table>`:
+
+```bash
+hotdata query \
+  "SELECT series, COUNT(*) AS cnt
+   FROM default.public.macro_indicators_raw
+   GROUP BY series ORDER BY series" \
+  -d example_macro
+```
 
 ```
-industrial_production  1288
 cpi                     951
-unemployment_rate       939
 fed_funds_rate          862
 housing_starts          808
+industrial_production  1288
+mortgage_30yr          2878
 nonfarm_payroll        1048
 retail_sales            412
-mortgage_30yr          2878
+unemployment_rate       939
 yield_curve_spread    12491
+```
+
+Preview the wide table:
+
+```bash
+hotdata query \
+  "SELECT * FROM default.public.macro_wide ORDER BY date LIMIT 5" \
+  -d example_macro
 ```
 
 ## Developer workflow
