@@ -15,3 +15,7 @@ def read_parquet_rows(path: str | Path) -> list[dict[str, Any]]:
 def write_rows_parquet(rows: list[dict[str, Any]], path: str | Path) -> None:
     table = pa.Table.from_pylist(rows)
     pq.write_table(table, Path(path))
+
+
+def write_table_parquet(table: pa.Table, path: str | Path) -> None:
+    pq.write_table(table, Path(path))

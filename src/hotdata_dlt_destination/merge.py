@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pyarrow as pa
 from dlt.common.schema import TTableSchema
 
 SUPPORTED_WRITE_DISPOSITIONS = frozenset({"replace", "append", "merge", "upsert"})
@@ -70,6 +71,28 @@ def combine_rows(
         return merge_rows(existing, incoming, primary_key=keys)
     if disposition == "append":
         return append_rows(existing, incoming)
+    raise ValueError(
+        f"Unsupported write_disposition {disposition!r}. "
+        f"Expected one of: {', '.join(sorted(SUPPORTED_WRITE_DISPOSITIONS))}"
+    )
+
+
+def combine_tables(
+    *,
+    disposition: str,
+    existing: pa.Table | None,
+    incoming: pa.Table,
+    primary_key: list[str] | None,
+) -> pa.Table:
+    """Arrow-native combine: avoids dict round-trip for replace and append."""
+    if disposition == "replace" or existing is None or len(existing) == 0:
+        return incoming
+    if disposition == "append":
+        return pa.concat_tables([existing, incoming], promote_options="default")
+    if disposition in ("merge", "upsert"):
+        keys = primary_key or ["_hotdata_row_key"]
+        merged = merge_rows(existing.to_pylist(), incoming.to_pylist(), primary_key=keys)
+        return pa.Table.from_pylist(merged)
     raise ValueError(
         f"Unsupported write_disposition {disposition!r}. "
         f"Expected one of: {', '.join(sorted(SUPPORTED_WRITE_DISPOSITIONS))}"

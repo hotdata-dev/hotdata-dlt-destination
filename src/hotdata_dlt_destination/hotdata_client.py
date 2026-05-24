@@ -4,6 +4,8 @@ import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+import pyarrow as pa
+from hotdata.arrow import ResultsApi as ArrowResultsApi
 from hotdata_runtime.client import HotdataClient as RuntimeClient
 from hotdata_runtime.databases import LoadManagedTableResult, ManagedDatabase
 
@@ -73,6 +75,37 @@ class HotdataClient:
                 return managed_table.synced
         return False
 
+    def fetch_table(
+        self,
+        *,
+        database: str,
+        schema: str,
+        table: str,
+    ) -> pa.Table | None:
+        """Fetch table contents as an Arrow table.
+
+        Returns None when the table has never been loaded or has no rows.
+        Uses Arrow IPC when the query returns an async result_id (avoiding
+        JSON serialization overhead for large tables); falls back to the
+        inline JSON response for small/sync results.
+        """
+        def operation() -> pa.Table | None:
+            if not self.table_is_synced(database, table, schema=schema):
+                return None
+            qualified_table = f'"{database}"."{schema}"."{table}"'
+            result = self._runtime.execute_sql(f"SELECT * FROM {qualified_table}")
+
+            result_id = getattr(result, "result_id", None)
+            if result_id:
+                arrow_api = ArrowResultsApi(self._runtime.api)
+                return arrow_api.get_result_arrow(result_id)
+
+            # Inline sync response: convert JSON rows to Arrow
+            records = result.to_records()
+            return pa.Table.from_pylist(records) if records else None
+
+        return self._request_with_retry(operation)
+
     def fetch_table_rows(
         self,
         *,
@@ -80,14 +113,8 @@ class HotdataClient:
         schema: str,
         table: str,
     ) -> list[dict[str, Any]]:
-        def operation() -> list[dict[str, Any]]:
-            if not self.table_is_synced(database, table, schema=schema):
-                return []
-            qualified_table = f'"{database}"."{schema}"."{table}"'
-            result = self._runtime.execute_sql(f"SELECT * FROM {qualified_table}")
-            return result.to_records()
-
-        return self._request_with_retry(operation)
+        result = self.fetch_table(database=database, schema=schema, table=table)
+        return result.to_pylist() if result is not None else []
 
     def upload_parquet(self, path: str) -> str:
         return self._request_with_retry(lambda: self._runtime.upload_parquet(path))
