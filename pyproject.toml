@@ -16,9 +16,7 @@ dependencies = [
 
 [project.scripts]
 hotdata-dlt-destination = "hotdata_dlt_destination.cli:main"
-hotdata-dlt-basic-pipeline = "hotdata_dlt_destination.pipelines.basic_pipeline:main"
-hotdata-dlt-incremental-pipeline = "hotdata_dlt_destination.pipelines.incremental_pipeline:main"
-hotdata-dlt-linear-pipeline = "hotdata_dlt_destination.pipelines.linear_pipeline:main"
+hotdata-dlt-demo = "hotdata_dlt_destination.pipelines.demo:main"
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]
