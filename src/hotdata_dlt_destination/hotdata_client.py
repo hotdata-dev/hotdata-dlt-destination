@@ -55,7 +55,7 @@ class HotdataClient:
                 if not create_if_missing:
                     raise
                 return self._runtime.create_managed_database(
-                    name,
+                    description=name,
                     schema=schema,
                     tables=sorted(set(tables)),
                 )
