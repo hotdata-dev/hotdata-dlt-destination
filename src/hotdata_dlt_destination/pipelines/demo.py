@@ -35,18 +35,6 @@ INDICATORS: dict[str, str] = {
     "yield_curve_spread":    "T10Y2Y",
 }
 
-MONTHLY_SERIES = [
-    "cpi",
-    "fed_funds_rate",
-    "unemployment_rate",
-    "housing_starts",
-    "industrial_production",
-    "mortgage_30yr",
-    "nonfarm_payroll",
-    "retail_sales",
-    "yield_curve_spread",
-]
-
 
 def _download_indicator(name: str) -> pd.DataFrame:
     """Download a FRED series and return a DataFrame with columns (date, <name>)."""
@@ -60,25 +48,23 @@ def all_indicators_resource():
     """Yields one row per (date, series, value) -- long/tidy format."""
     rows: list[dict] = []
     for name in INDICATORS:
-        df = _download_indicator(name)
-        for _, row in df.iterrows():
-            if pd.isna(row[name]):
-                continue
-            rows.append({"date": str(row["date"]), "series": name, "value": float(row[name])})
+        df = _download_indicator(name).dropna(subset=[name])
+        df["date"] = df["date"].astype(str)
+        rows.extend(df.rename(columns={name: "value"}).assign(series=name).to_dict("records"))
     yield rows
 
 
 @dlt.resource(name="macro_wide", write_disposition="replace")
 def macro_wide_resource():
     """Yields one row per date with each indicator as its own column (inner-joined)."""
-    dfs = [_download_indicator(name) for name in MONTHLY_SERIES]
+    dfs = [_download_indicator(name) for name in INDICATORS]
     merged = dfs[0]
     for df in dfs[1:]:
         merged = merged.merge(df, on="date", how="inner")
 
     merged = merged.sort_values("date")
     merged["date"] = merged["date"].astype(str)
-    yield merged[["date"] + MONTHLY_SERIES].to_dict(orient="records")
+    yield merged[["date"] + list(INDICATORS)].to_dict(orient="records")
 
 
 def main() -> None:
