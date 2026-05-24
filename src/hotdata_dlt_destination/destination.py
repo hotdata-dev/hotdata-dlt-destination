@@ -29,7 +29,8 @@ def _augment_table(
     table_name: str,
     items: TDataItems | str,
 ) -> pa.Table:
-    # Load as Arrow table — stays in Arrow from here to the Parquet upload.
+    # With loader_file_format="parquet" dlt always passes a file path; the
+    # else branch is a defensive fallback for callers that pass dicts directly.
     if isinstance(items, str):
         table = pq.read_table(items)
     else:
