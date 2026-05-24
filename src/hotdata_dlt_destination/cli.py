@@ -7,7 +7,7 @@ def main() -> None:
     config = HotdataDestinationConfig.from_env()
     print("hotdata-dlt-destination is configured")
     print(f"api_base_url={config.api_base_url}")
-    print(f"workspace_id={config.workspace_id}")
+    print(f"workspace_id={config.workspace_id[:8]}...")
     print(f"database_name={config.database_name}")
     print(f"schema={config.schema}")
     print(f"write_disposition={config.write_disposition}")

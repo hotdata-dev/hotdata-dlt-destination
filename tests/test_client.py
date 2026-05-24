@@ -93,7 +93,7 @@ def test_fetch_table_rows_reads_synced_table() -> None:
             return [SimpleNamespace(table="orders", synced=True)]
 
         def execute_sql(self, sql: str):
-            assert sql == "SELECT * FROM dlt.public.orders"
+            assert sql == 'SELECT * FROM "dlt"."public"."orders"'
             return SimpleNamespace(
                 to_records=lambda: [{"id": 1, "name": "alpha"}],
             )

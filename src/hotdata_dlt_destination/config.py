@@ -4,6 +4,28 @@ import os
 from dataclasses import dataclass
 
 
+def _parse_max_retries(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        raise ValueError(f"HOTDATA_MAX_RETRIES must be an integer, got {value!r}") from None
+    if n < 1:
+        raise ValueError(f"HOTDATA_MAX_RETRIES must be >= 1, got {n}")
+    return n
+
+
+def _parse_backoff(value: str) -> float:
+    try:
+        n = float(value)
+    except ValueError:
+        raise ValueError(
+            f"HOTDATA_RETRY_BACKOFF_SECONDS must be a number, got {value!r}"
+        ) from None
+    if n < 0:
+        raise ValueError(f"HOTDATA_RETRY_BACKOFF_SECONDS must be >= 0, got {n}")
+    return n
+
+
 @dataclass(frozen=True)
 class HotdataDestinationConfig:
     api_key: str
@@ -35,6 +57,8 @@ class HotdataDestinationConfig:
             ).lower()
             in {"1", "true", "yes"},
             declared_tables=declared_tables,
-            max_retries=int(os.environ.get("HOTDATA_MAX_RETRIES", "5")),
-            retry_backoff_seconds=float(os.environ.get("HOTDATA_RETRY_BACKOFF_SECONDS", "1.0")),
+            max_retries=_parse_max_retries(os.environ.get("HOTDATA_MAX_RETRIES", "5")),
+            retry_backoff_seconds=_parse_backoff(
+                os.environ.get("HOTDATA_RETRY_BACKOFF_SECONDS", "1.0")
+            ),
         )

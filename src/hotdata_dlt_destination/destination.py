@@ -155,5 +155,8 @@ def hotdata_destination(
         raise DestinationTerminalException(str(error)) from error
     finally:
         if parquet_path:
-            os.unlink(parquet_path)
+            try:
+                os.unlink(parquet_path)
+            except OSError:
+                pass
         client.close()

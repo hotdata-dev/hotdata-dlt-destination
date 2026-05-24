@@ -22,7 +22,7 @@ def classify_sdk_error(error: Exception) -> HotdataDestinationError:
         return HotdataTransientError(str(error))
     if isinstance(error, ApiException):
         status_code = int(error.status or 0)
-        message = f"{status_code}: {error.body or error.reason}"
+        message = f"{status_code}: {error.reason or 'unknown error'}"
         if status_code in (408, 409, 425, 429):
             return HotdataTransientError(message)
         if 500 <= status_code <= 599:

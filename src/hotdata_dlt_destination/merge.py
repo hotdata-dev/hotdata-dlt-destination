@@ -22,7 +22,13 @@ def resolve_primary_key(table: TTableSchema) -> list[str] | None:
 
 
 def row_key(row: dict[str, Any], keys: list[str]) -> tuple[Any, ...]:
-    return tuple(row.get(key) for key in keys)
+    values = tuple(row.get(key) for key in keys)
+    missing = [k for k, v in zip(keys, values, strict=True) if v is None]
+    if missing:
+        raise ValueError(
+            f"Primary key field(s) {missing} are None or missing in row -- cannot merge"
+        )
+    return values
 
 
 def append_rows(

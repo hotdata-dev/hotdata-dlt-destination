@@ -15,7 +15,9 @@ Environment:
 from __future__ import annotations
 
 import functools
+import io
 import os
+import urllib.request
 
 import dlt
 import pandas as pd
@@ -41,7 +43,9 @@ INDICATORS: dict[str, str] = {
 def _download_indicator(name: str) -> pd.DataFrame:
     """Download a FRED series and return a DataFrame with columns (date, <name>)."""
     series_id = INDICATORS[name]
-    df = pd.read_csv(FRED_URL.format(series_id), parse_dates=["observation_date"])
+    with urllib.request.urlopen(FRED_URL.format(series_id), timeout=30) as response:
+        content = response.read().decode("utf-8")
+    df = pd.read_csv(io.StringIO(content), parse_dates=["observation_date"])
     return df.rename(columns={"observation_date": "date", series_id: name})
 
 
