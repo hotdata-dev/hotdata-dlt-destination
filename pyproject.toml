@@ -9,8 +9,8 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "dlt>=1.26.0",
-    "hotdata>=0.2.4",
-    "hotdata-runtime>=0.2.0",
+    "hotdata>=0.2.5",
+    "hotdata-runtime>=0.2.3",
     "pandas>=2.0",
     "pyarrow>=14",
 ]
