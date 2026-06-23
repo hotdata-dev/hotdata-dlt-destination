@@ -1,6 +1,6 @@
 [project]
 name = "hotdata-dlt-destination"
-version = "0.3.4"
+version = "0.4.0"
 description = "dlt destination for loading data into Hotdata managed databases."
 readme = "README.md"
 authors = [
@@ -8,9 +8,9 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "dlt>=1.26.0",
-    "hotdata>=0.2.4",
-    "hotdata-runtime>=0.2.0",
+    "dlt>=1.28.1",
+    "hotdata>=0.4.1",
+    "hotdata-runtime>=0.3.0",
     "pandas>=2.0",
     "pyarrow>=14",
 ]
@@ -26,6 +26,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "mypy>=1.11",
     "ruff>=0.15.13",
 ]
 
@@ -36,9 +37,48 @@ markers = [
     "integration: requires live Hotdata and Linear credentials",
 ]
 
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = [
+  "src",
+  "tests",
+]
+mypy_path = ["src"]
+namespace_packages = true
+explicit_package_bases = true
+warn_unused_configs = true
+disallow_any_decorated = true
+disallow_any_explicit = true
+disallow_any_expr = true
+disallow_any_generics = true
+disallow_any_unimported = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+allow_untyped_globals = false
+implicit_reexport = false
+implicit_optional = false
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+strict_equality = true
+strict_bytes = true
+extra_checks = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = ["E", "W", "F", "I", "B", "UP", "N", "C4", "DTZ", "T20", "RET", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/**/*.py" = ["T201", "E501"]
+"src/hotdata_dlt_destination/cli.py" = ["T201"]
+"src/hotdata_dlt_destination/pipelines/**/*.py" = ["T201"]
+"tests/**/*.py" = ["N814"]

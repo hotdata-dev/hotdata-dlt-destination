@@ -18,11 +18,7 @@ def update_changelog_text(text: str, ver: str, date: str) -> str:
         if body:
             section = f"## [{ver}] - {date}\n\n{body}\n\n"
         else:
-            section = (
-                f"## [{ver}] - {date}\n\n"
-                "### Changed\n\n"
-                f"- Release {ver}\n\n"
-            )
+            section = f"## [{ver}] - {date}\n\n### Changed\n\n- Release {ver}\n\n"
         return re.sub(
             r"^(## \[Unreleased\]\s*\n)(.*?)(?=^## \[|\Z)",
             lambda match: match.group(1) + "\n" + section,
@@ -31,12 +27,7 @@ def update_changelog_text(text: str, ver: str, date: str) -> str:
             flags=re.M | re.S,
         )
 
-    section = (
-        f"## [Unreleased]\n\n"
-        f"## [{ver}] - {date}\n\n"
-        "### Changed\n\n"
-        f"- Release {ver}\n\n"
-    )
+    section = f"## [Unreleased]\n\n## [{ver}] - {date}\n\n### Changed\n\n- Release {ver}\n\n"
     first_heading = re.search(r"^## \[", text, re.M)
     if first_heading:
         pos = first_heading.start()

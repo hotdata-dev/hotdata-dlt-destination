@@ -18,9 +18,11 @@ Options:
     --no-query        skip the read/query phase
     --no-cleanup      keep databases after the test
 """
+
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import random
 import statistics
@@ -35,7 +37,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from hotdata_dlt_destination.hotdata_client import HotdataClient
-
 
 # ---------------------------------------------------------------------------
 # Data generation
@@ -72,6 +73,7 @@ def generate_table(rows: int) -> pa.Table:
 # ---------------------------------------------------------------------------
 # Timing helpers
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class PhaseResult:
@@ -130,6 +132,7 @@ def _percentile(data: list[float], pct: int) -> float:
 # Per-database worker
 # ---------------------------------------------------------------------------
 
+
 def run_database_load(
     *,
     db_name: str,
@@ -161,7 +164,9 @@ def run_database_load(
             )
             results.append(PhaseResult(db_name, "create_db", time.perf_counter() - t0))
         except Exception as exc:
-            results.append(PhaseResult(db_name, "create_db", time.perf_counter() - t0, error=str(exc)))
+            results.append(
+                PhaseResult(db_name, "create_db", time.perf_counter() - t0, error=str(exc))
+            )
             return results
 
         # --- generate + write parquet ---
@@ -173,10 +178,11 @@ def run_database_load(
                 parquet_path = fh.name
             pq.write_table(table, parquet_path)
             write_elapsed = time.perf_counter() - t0
-            bytes_written = os.path.getsize(parquet_path)
             results.append(PhaseResult(db_name, "write_parquet", write_elapsed, rows=rows))
         except Exception as exc:
-            results.append(PhaseResult(db_name, "write_parquet", time.perf_counter() - t0, error=str(exc)))
+            results.append(
+                PhaseResult(db_name, "write_parquet", time.perf_counter() - t0, error=str(exc))
+            )
             return results
 
         # --- upload parquet ---
@@ -189,17 +195,13 @@ def run_database_load(
             return results
         finally:
             if parquet_path:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(parquet_path)
-                except OSError:
-                    pass
 
         # --- load managed table ---
         t0 = time.perf_counter()
         try:
-            client.load_managed_table(
-                db_name, "events", schema="public", upload_id=upload_id
-            )
+            client.load_managed_table(db_name, "events", schema="public", upload_id=upload_id)
             results.append(PhaseResult(db_name, "load", time.perf_counter() - t0, rows=rows))
         except Exception as exc:
             results.append(PhaseResult(db_name, "load", time.perf_counter() - t0, error=str(exc)))
@@ -209,13 +211,13 @@ def run_database_load(
         if do_query:
             t0 = time.perf_counter()
             try:
-                result_table = client.fetch_table(
-                    database=db_name, schema="public", table="events"
-                )
+                result_table = client.fetch_table(database=db_name, schema="public", table="events")
                 n = len(result_table) if result_table is not None else 0
                 results.append(PhaseResult(db_name, "query", time.perf_counter() - t0, rows=n))
             except Exception as exc:
-                results.append(PhaseResult(db_name, "query", time.perf_counter() - t0, error=str(exc)))
+                results.append(
+                    PhaseResult(db_name, "query", time.perf_counter() - t0, error=str(exc))
+                )
 
     finally:
         client.close()
@@ -226,6 +228,7 @@ def run_database_load(
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
+
 
 def delete_databases(
     db_names: list[str],
@@ -253,11 +256,20 @@ def delete_databases(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--databases", type=int, default=5, metavar="N", help="number of databases (default: 5)")
-    parser.add_argument("--rows", type=int, default=10_000, metavar="N", help="rows per table (default: 10000)")
-    parser.add_argument("--concurrency", type=int, default=3, metavar="N", help="parallel workers (default: 3)")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--databases", type=int, default=5, metavar="N", help="number of databases (default: 5)"
+    )
+    parser.add_argument(
+        "--rows", type=int, default=10_000, metavar="N", help="rows per table (default: 10000)"
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=3, metavar="N", help="parallel workers (default: 3)"
+    )
     parser.add_argument("--no-query", action="store_true", help="skip the query phase")
     parser.add_argument("--no-cleanup", action="store_true", help="keep databases after the test")
     args = parser.parse_args()

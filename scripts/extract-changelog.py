@@ -19,7 +19,7 @@ def extract(changelog: str, version: str) -> str:
     next_heading = re.search(r"^## \[", rest, re.M)
     end = match.end() + (next_heading.start() if next_heading else len(rest))
     section = changelog[start:end].strip()
-    title, _, body = section.partition("\n")
+    _title, _, body = section.partition("\n")
     return body.strip() or f"Release {version}."
 
 

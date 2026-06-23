@@ -12,6 +12,7 @@ Environment:
     HOTDATA_API_KEY    -- Hotdata API key
     HOTDATA_WORKSPACE  -- Hotdata workspace ID
 """
+
 from __future__ import annotations
 
 import functools
@@ -27,15 +28,15 @@ from hotdata_dlt_destination.destination import hotdata_destination
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
 
 INDICATORS: dict[str, str] = {
-    "cpi":                   "CPIAUCSL",
-    "fed_funds_rate":        "FEDFUNDS",
-    "unemployment_rate":     "UNRATE",
-    "housing_starts":        "HOUST",
+    "cpi": "CPIAUCSL",
+    "fed_funds_rate": "FEDFUNDS",
+    "unemployment_rate": "UNRATE",
+    "housing_starts": "HOUST",
     "industrial_production": "INDPRO",
-    "mortgage_30yr":         "MORTGAGE30US",
-    "nonfarm_payroll":       "PAYEMS",
-    "retail_sales":          "RSXFS",
-    "yield_curve_spread":    "T10Y2Y",
+    "mortgage_30yr": "MORTGAGE30US",
+    "nonfarm_payroll": "PAYEMS",
+    "retail_sales": "RSXFS",
+    "yield_curve_spread": "T10Y2Y",
 }
 
 
@@ -51,13 +52,7 @@ def _download_indicator(name: str) -> pd.DataFrame:
 
 def _to_monthly(df: pd.DataFrame, name: str) -> pd.DataFrame:
     """Resample a series to month-start frequency, taking the last value per month."""
-    return (
-        df.set_index("date")[name]
-        .resample("MS")
-        .last()
-        .dropna()
-        .reset_index()
-    )
+    return df.set_index("date")[name].resample("MS").last().dropna().reset_index()
 
 
 @dlt.resource(name="macro_indicators_raw", write_disposition="replace")
@@ -85,7 +80,7 @@ def macro_wide_resource():
 
     merged = merged.sort_values("date")
     merged["date"] = merged["date"].astype(str)
-    yield merged[["date"] + list(INDICATORS)].to_dict(orient="records")
+    yield merged[["date", *INDICATORS]].to_dict(orient="records")
 
 
 def main() -> None:

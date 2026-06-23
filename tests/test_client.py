@@ -46,7 +46,7 @@ def test_upload_and_load_managed_table() -> None:
         retry_backoff_seconds=0.0,
     )
     fake_runtime = FakeRuntime()
-    client._runtime = fake_runtime  # noqa: SLF001
+    client._runtime = fake_runtime
 
     upload_id = client.upload_parquet("/tmp/batch.parquet")
     loaded = client.load_managed_table(
@@ -80,7 +80,7 @@ def test_fetch_table_rows_skips_unsynced_tables() -> None:
         max_retries=1,
         retry_backoff_seconds=0.0,
     )
-    client._runtime = FakeRuntime()  # noqa: SLF001
+    client._runtime = FakeRuntime()
 
     rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
     assert rows == []
@@ -88,12 +88,12 @@ def test_fetch_table_rows_skips_unsynced_tables() -> None:
 
 
 def test_fetch_table_rows_reads_synced_table() -> None:
-    import pyarrow as pa
-
     # Patch module-level QueryApi and ArrowResultsApi so no real HTTP happens.
+    # The client implementation now lives in hotdata_runtime.managed_client
+    # (re-exported here as HotdataClient), so patch the symbols there.
+    import hotdata_runtime.managed_client as _mod
+    import pyarrow as pa
     from hotdata.models.query_response import QueryResponse as _QR
-
-    import hotdata_dlt_destination.hotdata_client as _mod
 
     class FakeQueryApi:
         def __init__(self, api):
@@ -106,6 +106,8 @@ def test_fetch_table_rows_reads_synced_table() -> None:
                 columns=["id", "name"],
                 rows=[[1, "alpha"]],
                 row_count=1,
+                preview_row_count=1,
+                truncated=False,
                 nullable=[False, False],
                 result_id="result_1",
                 query_run_id="qrun_1",
@@ -134,8 +136,8 @@ def test_fetch_table_rows_reads_synced_table() -> None:
 
     orig_query_api = _mod.QueryApi
     orig_arrow_api = _mod.ArrowResultsApi
-    _mod.QueryApi = FakeQueryApi  # noqa: SLF001
-    _mod.ArrowResultsApi = FakeArrowResultsApi  # noqa: SLF001
+    _mod.QueryApi = FakeQueryApi
+    _mod.ArrowResultsApi = FakeArrowResultsApi
 
     client = HotdataClient(
         api_key="k",
@@ -144,7 +146,7 @@ def test_fetch_table_rows_reads_synced_table() -> None:
         max_retries=1,
         retry_backoff_seconds=0.0,
     )
-    client._runtime = FakeRuntime()  # noqa: SLF001
+    client._runtime = FakeRuntime()
 
     try:
         rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
@@ -170,7 +172,7 @@ def test_fetch_table_rows_returns_empty_when_table_missing() -> None:
         max_retries=1,
         retry_backoff_seconds=0.0,
     )
-    client._runtime = FakeRuntime()  # noqa: SLF001
+    client._runtime = FakeRuntime()
 
     rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
     assert rows == []

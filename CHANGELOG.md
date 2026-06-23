@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [0.4.0] - 2026-06-22
+
+### Changed
+
+- Upgrade `hotdata` SDK to `>=0.4.1` (was `>=0.2.4`) and `hotdata-runtime` to `>=0.3.0` (was `>=0.2.0`); refresh `uv.lock`.
+- Raise the `dlt` floor to `>=1.28.1` (was `>=1.26.0`); the full test suite stays green.
+- `hotdata_client.HotdataClient` is now a thin re-export of `hotdata_runtime.managed_client.ManagedDatabaseClient`; the managed-database client logic (bounded retries, Arrow result fetching, managed-table lifecycle) is now owned and tested upstream in `hotdata-runtime`.
+- `errors.py` re-exports the typed error hierarchy from `hotdata_runtime.errors` (`HotdataError`, `HotdataTransientError`, `HotdataTerminalError`, `classify_sdk_error`); `HotdataDestinationError` is kept as a backward-compatible alias of `HotdataError`.
+- The destination load/write path now maps `HotdataTransientError` (transient failures that survived the runtime's bounded retries) to dlt's `DestinationTransientException`, so dlt's retry layer can re-attempt the load; terminal failures still map to `DestinationTerminalException`.
+- Test fixtures updated for the hotdata 0.4.1 `QueryResponse` model (now-required `preview_row_count` and `truncated` fields).
+
+### Added
+
+- Strict `[tool.mypy]` configuration and a `mypy>=1.11` dev dependency (not wired into CI).
+- Expanded ruff lint `select` (`W`, `N`, `C4`, `DTZ`, `T20`, `RET`, `SIM`, `RUF`) with targeted per-file ignores; applied `ruff check --fix` and `ruff format` across `src`, `scripts`, and `tests`.
+
 ## [0.3.4] - 2026-05-27
 
 ### Changed
