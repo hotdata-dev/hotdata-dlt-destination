@@ -18,9 +18,7 @@ def _parse_backoff(value: str) -> float:
     try:
         n = float(value)
     except ValueError:
-        raise ValueError(
-            f"HOTDATA_RETRY_BACKOFF_SECONDS must be a number, got {value!r}"
-        ) from None
+        raise ValueError(f"HOTDATA_RETRY_BACKOFF_SECONDS must be a number, got {value!r}") from None
     if n < 0:
         raise ValueError(f"HOTDATA_RETRY_BACKOFF_SECONDS must be >= 0, got {n}")
     return n
@@ -42,9 +40,7 @@ class HotdataDestinationConfig:
     @classmethod
     def from_env(cls) -> HotdataDestinationConfig:
         declared = os.environ.get("HOTDATA_DECLARED_TABLES", "")
-        declared_tables = tuple(
-            table.strip() for table in declared.split(",") if table.strip()
-        )
+        declared_tables = tuple(table.strip() for table in declared.split(",") if table.strip())
         return cls(
             api_key=os.environ["HOTDATA_API_KEY"],
             workspace_id=os.environ["HOTDATA_WORKSPACE"],

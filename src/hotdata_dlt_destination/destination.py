@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from datetime import UTC, datetime
@@ -7,13 +8,16 @@ from datetime import UTC, datetime
 import dlt
 import pyarrow as pa
 import pyarrow.parquet as pq
-from dlt.common.destination.exceptions import DestinationTerminalException
+from dlt.common.destination.exceptions import (
+    DestinationTerminalException,
+    DestinationTransientException,
+)
 from dlt.common.schema import TTableSchema
 from dlt.common.typing import TDataItems
 
 from hotdata_dlt_destination.config import HotdataDestinationConfig
 from hotdata_dlt_destination.contracts import TableContract
-from hotdata_dlt_destination.errors import HotdataTerminalError
+from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransientError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 from hotdata_dlt_destination.idempotency import compute_batch_key, compute_row_key
 from hotdata_dlt_destination.merge import (
@@ -48,8 +52,7 @@ def _augment_table(
     n = len(table)
     table = table.append_column("_hotdata_batch_key", pa.array([batch_key] * n, type=pa.string()))
     table = table.append_column("_hotdata_row_key", pa.array(row_keys, type=pa.string()))
-    table = table.append_column("_hotdata_loaded_at", pa.array([loaded_at] * n, type=pa.string()))
-    return table
+    return table.append_column("_hotdata_loaded_at", pa.array([loaded_at] * n, type=pa.string()))
 
 
 def _declared_tables(
@@ -154,12 +157,15 @@ def hotdata_destination(
             schema=contract.schema,
             upload_id=upload_id,
         )
+    except HotdataTransientError as error:
+        # Transient errors that survived the runtime's bounded retries are
+        # surfaced to dlt as transient so its own retry layer can re-attempt
+        # the load step.
+        raise DestinationTransientException(str(error)) from error
     except HotdataTerminalError as error:
         raise DestinationTerminalException(str(error)) from error
     finally:
         if parquet_path is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(parquet_path)
-            except OSError:
-                pass
         client.close()
