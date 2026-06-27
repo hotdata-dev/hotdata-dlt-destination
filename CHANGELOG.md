@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.4.1] - 2026-06-27
+
 ### Fixed
 
 - **State sync was broken**: `normalize_identifier` stripped leading underscores, so the load-job path wrote the pipeline-state table as `dlt_pipeline_state` while `get_stored_state` read `_dlt_pipeline_state` — `get_stored_state` always returned `None` and incremental sources never resumed. Leading underscores are now preserved.
@@ -54,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Release 0.3.4
+- Bump `hotdata-framework` to `>=0.4.1` — waits for result readiness on the synchronous query path, fixing merge/append loads and state reads.
 
 ## [0.3.3] - 2026-05-24
 
