@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "dlt>=1.28.1",
     "hotdata>=0.4.1",
-    "hotdata-runtime>=0.3.0",
+    "hotdata-framework>=0.4.0",
     "pandas>=2.0",
     "pyarrow>=14",
 ]

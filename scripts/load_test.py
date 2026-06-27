@@ -237,7 +237,7 @@ def delete_databases(
     workspace_id: str,
     api_base_url: str,
 ) -> None:
-    from hotdata_runtime.client import HotdataClient as RuntimeClient
+    from hotdata_framework.client import HotdataClient as RuntimeClient
 
     client = RuntimeClient(api_key, workspace_id, host=api_base_url.rstrip("/"))
     try:
