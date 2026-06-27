@@ -247,8 +247,9 @@ class HotdataJobClient(JobClientBase, WithStateSync):
         self,
         only_tables: Iterable[str] = None,
         expected_update: TSchemaTables = None,
+        force: bool = False,
     ) -> TSchemaTables | None:
-        result = super().update_stored_schema(only_tables, expected_update)
+        result = super().update_stored_schema(only_tables, expected_update, force)
         try:
             self._write_schema_to_storage()
         except HotdataTerminalError as exc:

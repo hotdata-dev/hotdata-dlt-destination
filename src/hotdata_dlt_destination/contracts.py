@@ -9,7 +9,11 @@ IDENTIFIER_RE = re.compile(r"[^a-zA-Z0-9_]")
 
 
 def normalize_identifier(value: str) -> str:
-    normalized = IDENTIFIER_RE.sub("_", value).strip("_").lower()
+    # Replace invalid characters and lowercase, but preserve leading/trailing
+    # underscores: dlt's internal tables and columns (`_dlt_id`, `_dlt_load_id`,
+    # `_dlt_pipeline_state`, ...) rely on the leading underscore, and stripping it
+    # breaks state-sync round-tripping and bookkeeping table lookups.
+    normalized = IDENTIFIER_RE.sub("_", value).lower()
     return normalized or "unnamed"
 
 
@@ -31,19 +35,13 @@ class TableContract:
         database_name: str,
         schema: str,
     ) -> TableContract:
-        table_name = normalize_identifier(table["name"])
-        parent_name = table.get("parent")
-        parent_table_name = normalize_identifier(parent_name) if parent_name else ""
-
-        if parent_table_name:
-            normalized_table_name = f"{parent_table_name}__{table_name}"
-        else:
-            normalized_table_name = table_name
-
+        # dlt has already applied the naming convention, so ``name`` is the fully
+        # composed table name (e.g. ``orders__items`` for a nested table). Do NOT
+        # re-prepend ``parent`` -- that double-prefixes child tables.
         return cls(
             database_name=normalize_identifier(database_name),
             schema=normalize_identifier(schema),
-            table_name=normalized_table_name,
+            table_name=normalize_identifier(table["name"]),
         )
 
     @classmethod

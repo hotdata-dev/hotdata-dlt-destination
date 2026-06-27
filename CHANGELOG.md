@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **State sync was broken**: `normalize_identifier` stripped leading underscores, so the load-job path wrote the pipeline-state table as `dlt_pipeline_state` while `get_stored_state` read `_dlt_pipeline_state` — `get_stored_state` always returned `None` and incremental sources never resumed. Leading underscores are now preserved.
+- **Nested/child tables were double-prefixed** (`orders__orders__items`): the table contract re-prepended `parent` to dlt's already-composed name. It now uses dlt's name as-is.
+- **`update_stored_schema` crashed every real load** under dlt ≥1.28: the override didn't accept dlt's `force` keyword. It now accepts and forwards `force`.
+- Added in-memory end-to-end tests (`tests/test_e2e_inmemory.py`) that run real dlt pipelines through the destination, plus contract regression tests, covering all three issues.
+
 ### Added
 
 - New native `hotdata` destination — a dlt `JobClientBase` + `WithStateSync` plugin — exported as `from hotdata_dlt_destination import hotdata`. It implements dlt's complete destination contract:
