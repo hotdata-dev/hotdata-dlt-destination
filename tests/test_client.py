@@ -89,9 +89,9 @@ def test_fetch_table_rows_skips_unsynced_tables() -> None:
 
 def test_fetch_table_rows_reads_synced_table() -> None:
     # Patch module-level QueryApi and ArrowResultsApi so no real HTTP happens.
-    # The client implementation now lives in hotdata_runtime.managed_client
+    # The client implementation now lives in hotdata_framework.managed_client
     # (re-exported here as HotdataClient), so patch the symbols there.
-    import hotdata_runtime.managed_client as _mod
+    import hotdata_framework.managed_client as _mod
     import pyarrow as pa
     from hotdata.models.query_response import QueryResponse as _QR
 

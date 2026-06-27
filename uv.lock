@@ -285,7 +285,7 @@ source = { editable = "." }
 dependencies = [
     { name = "dlt" },
     { name = "hotdata" },
-    { name = "hotdata-runtime" },
+    { name = "hotdata-framework" },
     { name = "pandas" },
     { name = "pyarrow" },
 ]
@@ -301,7 +301,7 @@ dev = [
 requires-dist = [
     { name = "dlt", specifier = ">=1.28.1" },
     { name = "hotdata", specifier = ">=0.4.1" },
-    { name = "hotdata-runtime", specifier = ">=0.3.0" },
+    { name = "hotdata-framework", specifier = ">=0.4.0" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=14" },
 ]
@@ -314,17 +314,17 @@ dev = [
 ]
 
 [[package]]
-name = "hotdata-runtime"
-version = "0.3.0"
+name = "hotdata-framework"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hotdata" },
     { name = "pandas" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9a/a1/f5d7d34a646dd3b43f2c7428664f1863714138df59ebe7c7027e69c22194/hotdata_runtime-0.3.0.tar.gz", hash = "sha256:96807f20df48e727431af96d47b1ec3c19d067a4fdc4ddd746ba6a508202e3af", size = 91605, upload-time = "2026-06-22T21:40:18.323Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/0c/1062892168ff8e9ebef5f697c8bc967efd56f9e7c36dec3d17672d5cc57a/hotdata_framework-0.4.0.tar.gz", hash = "sha256:682dba62ba967524960207406ace5c59527b6dab98337eb1ba4b476c9f7fe8cc", size = 92199, upload-time = "2026-06-27T04:56:08.46Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1c/ef/44a21b447070196c963eb975a6e10c8d90c66f1207328a41c1d36520ab0f/hotdata_runtime-0.3.0-py3-none-any.whl", hash = "sha256:e546af1652d324b6e6e2832bb2af73b7c639c02670ecc4d34a8c7141fcdc83ac", size = 13327, upload-time = "2026-06-22T21:40:17.041Z" },
+    { url = "https://files.pythonhosted.org/packages/29/a3/ace6760d8d843fe86807a25b9cf85596bd044248f9e470f40835cddc8123/hotdata_framework-0.4.0-py3-none-any.whl", hash = "sha256:1c378c2383fdc87a6c5d5bd1638bab40f4c9f7ccc435211febb1a2937150b0ea", size = 13711, upload-time = "2026-06-27T04:56:07.336Z" },
 ]
 
 [[package]]

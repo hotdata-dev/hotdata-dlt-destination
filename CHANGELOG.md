@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
 
+- Migrate the runtime dependency from `hotdata-runtime` to `hotdata-framework` (`>=0.4.0`): `hotdata_client.py` and `errors.py` now import from `hotdata_framework`; `uv.lock`, scripts, and test fixtures updated accordingly.
 
 ## [0.4.0] - 2026-06-22
 

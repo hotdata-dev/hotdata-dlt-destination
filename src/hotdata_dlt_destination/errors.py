@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from hotdata_runtime.errors import (
+from hotdata_framework.errors import (
     HotdataError,
     HotdataTerminalError,
     HotdataTransientError,
