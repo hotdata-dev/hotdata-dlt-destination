@@ -37,7 +37,7 @@
 
 1. Create a new module in `src/hotdata_dlt_destination/pipelines/`.
 2. Define a `dlt.resource` with explicit `name` and `write_disposition`.
-3. Build pipeline with `destination=hotdata_destination(database_name=..., declared_tables=[...])`.
+3. Build pipeline with `destination=hotdata(database_name=..., declared_tables=[...])`.
 4. Add script entrypoint in `pyproject.toml`.
 5. Add tests covering schema shape, idempotency key behavior, and retry/error handling.
 

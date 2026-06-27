@@ -9,19 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- New native `hotdata` destination — a dlt `JobClientBase` + `WithStateSync` plugin — exported as `from hotdata_dlt_destination import hotdata`, alongside the existing `hotdata_destination` sink. It implements dlt's complete destination contract:
+- New native `hotdata` destination — a dlt `JobClientBase` + `WithStateSync` plugin — exported as `from hotdata_dlt_destination import hotdata`. It implements dlt's complete destination contract:
   - Pipeline **state sync** (`get_stored_state`) so incremental sources restore their state from the managed database across runs.
   - Schema versioning (`_dlt_version`) and load tracking (`_dlt_loads`); dlt internal columns (`_dlt_id`, `_dlt_load_id`) are preserved.
   - Nested/child tables (`max_table_nesting`, default 1000) and `snake_case` identifiers.
   - `insert-only` write disposition, in addition to `replace`/`append`/`merge`/`upsert`.
   - Cross-run schema evolution: when an existing managed database is missing a declared table, it is recreated with the union of existing and required tables.
-- `configuration.py` (configspec), `factory.py` (`hotdata` `Destination`), `job_client.py` (`HotdataJobClient`, `HotdataLoadJob`); `hotdata_client.HotdataClient` is now a `ManagedDatabaseClient` subclass adding the union-recreate `ensure_managed_database`.
-- Tests: `tests/test_factory.py` and `tests/test_job_client.py`; `insert-only` and `_dlt_id`-fallback cases in `tests/test_merge.py`.
+- `configuration.py` (`HotdataCredentials`, `HotdataClientConfiguration` configspec), `factory.py` (`hotdata` `Destination`), and `job_client.py` (`HotdataJobClient`, `HotdataLoadJob`).
+- Tests: `tests/test_factory.py` (capabilities) and `tests/test_job_client.py` (load job + state sync against a fake client); `insert-only` and `_dlt_id`-fallback cases in `tests/test_merge.py`.
+
+### Removed
+
+- **Breaking:** removed the lightweight `hotdata_destination` `@dlt.destination` sink and the `_hotdata_batch_key` / `_hotdata_row_key` / `_hotdata_loaded_at` idempotency columns it added (`destination.py`, `idempotency.py`). Use `hotdata`, which relies on dlt's native `_dlt_id` for row identity. Migrate `destination=hotdata_destination(...)` → `destination=hotdata(...)` (pass `credentials=HotdataCredentials(api_key=..., workspace_id=...)` or set the env vars).
 
 ### Changed
 
-- Migrate the runtime dependency from `hotdata-runtime` to `hotdata-framework` (`>=0.4.0`): `hotdata_client.py` and `errors.py` now import from `hotdata_framework`; `uv.lock`, scripts, and test fixtures updated accordingly.
-- `merge.combine_tables` gained a `fallback_key` parameter (default `_hotdata_row_key`); `insert-only` added to `SUPPORTED_WRITE_DISPOSITIONS`.
+- `hotdata_client.HotdataClient` is now a `hotdata_framework.managed_client.ManagedDatabaseClient` subclass that adds the cross-run union-recreate `ensure_managed_database` (was a thin re-export).
+- `merge.combine_tables` gained a `fallback_key` parameter (default `_dlt_id`); `insert-only` added to `SUPPORTED_WRITE_DISPOSITIONS`.
 
 ## [0.4.0] - 2026-06-22
 

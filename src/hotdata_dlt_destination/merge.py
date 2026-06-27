@@ -56,13 +56,13 @@ def combine_tables(
     existing: pa.Table | None,
     incoming: pa.Table,
     primary_key: list[str] | None,
-    fallback_key: str = "_hotdata_row_key",
+    fallback_key: str = "_dlt_id",
 ) -> pa.Table:
     """Arrow-native combine: avoids dict round-trip for replace and append.
 
     ``fallback_key`` is the row-identity column used for merge/upsert/insert-only
-    when no ``primary_key`` is declared. The sink uses ``_hotdata_row_key``; the
-    full destination preserves dlt columns and passes ``_dlt_id``.
+    when no ``primary_key`` is declared. dlt's ``_dlt_id`` is preserved on every
+    row, so it is the default.
     """
     if disposition == "replace" or existing is None or len(existing) == 0:
         return incoming
