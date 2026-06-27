@@ -43,6 +43,26 @@ export HOTDATA_WORKSPACE=your_workspace_id
 
 That's it. On first run, the `sales` managed database is created automatically and the `orders` table is loaded.
 
+## Two destinations
+
+This package ships two destinations with the same credentials and managed-database model:
+
+- **`hotdata_destination`** (used above) — a lightweight `@dlt.destination` sink. Flat tables only, adds `_hotdata_*` idempotency columns, and keeps no dlt state/schema bookkeeping.
+- **`hotdata`** — a native dlt destination (`JobClientBase` + `WithStateSync`). Use it when you need nested/child tables, dlt's internal columns (`_dlt_id`, `_dlt_load_id`), schema versioning, load tracking, the `insert-only` write disposition, or **incremental pipeline state that round-trips through Hotdata** so dlt incremental sources resume across runs.
+
+```python
+import dlt
+from hotdata_dlt_destination import hotdata
+
+pipeline = dlt.pipeline(
+    pipeline_name="my_pipeline",
+    destination=hotdata(database_name="sales", declared_tables=["orders"]),
+)
+pipeline.run(orders_resource())
+```
+
+It accepts the same parameters as `hotdata_destination` (see below) plus `max_table_nesting` (default `1000`). It does not add `_hotdata_*` columns — it relies on dlt's `_dlt_id` for row identity. If an existing managed database is missing a declared table on a later run, it is recreated with the union of existing and required tables; existing data is snapshotted and reloaded so nothing is lost.
+
 ## Configuration
 
 | Parameter | Env variable | Default | Description |

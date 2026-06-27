@@ -110,7 +110,41 @@ def test_combine_tables_upsert_same_as_merge() -> None:
     assert result.to_pylist() == [{"id": 1, "v": "new"}, {"id": 2, "v": "added"}]
 
 
+def test_combine_tables_insert_only_skips_existing_keys() -> None:
+    result = combine_tables(
+        disposition="insert-only",
+        existing=_t({"id": 1, "v": "a"}),
+        incoming=_t({"id": 1, "v": "b"}, {"id": 2, "v": "c"}),
+        primary_key=["id"],
+    )
+    # existing id=1 is preserved (not overwritten); only the new id=2 is appended
+    assert result.to_pylist() == [{"id": 1, "v": "a"}, {"id": 2, "v": "c"}]
+
+
+def test_combine_tables_insert_only_returns_existing_when_no_new_rows() -> None:
+    existing = _t({"id": 1, "v": "a"})
+    result = combine_tables(
+        disposition="insert-only",
+        existing=existing,
+        incoming=_t({"id": 1, "v": "b"}),
+        primary_key=["id"],
+    )
+    assert result.to_pylist() == [{"id": 1, "v": "a"}]
+
+
+def test_combine_tables_merge_falls_back_to_dlt_id() -> None:
+    result = combine_tables(
+        disposition="merge",
+        existing=_t({"_dlt_id": "a", "value": 1}),
+        incoming=_t({"_dlt_id": "a", "value": 2}),
+        primary_key=None,
+        fallback_key="_dlt_id",
+    )
+    assert result.to_pylist() == [{"_dlt_id": "a", "value": 2}]
+
+
 def test_combine_tables_merge_falls_back_to_hotdata_row_key() -> None:
+    # Default fallback_key for the sink path.
     result = combine_tables(
         disposition="merge",
         existing=_t({"_hotdata_row_key": "a", "value": 1}),

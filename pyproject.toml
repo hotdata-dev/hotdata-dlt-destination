@@ -81,4 +81,9 @@ select = ["E", "W", "F", "I", "B", "UP", "N", "C4", "DTZ", "T20", "RET", "SIM", 
 "scripts/**/*.py" = ["T201", "E501"]
 "src/hotdata_dlt_destination/cli.py" = ["T201"]
 "src/hotdata_dlt_destination/pipelines/**/*.py" = ["T201"]
+# dlt destination factories use a lowercase class name (e.g. `duckdb`, `filesystem`)
+# and implicit-Optional kwargs (None = "fall back to config default") by convention.
+"src/hotdata_dlt_destination/factory.py" = ["N801", "RUF013"]
+# JobClientBase/WithStateSync overrides mirror dlt base-class signatures (implicit Optional).
+"src/hotdata_dlt_destination/job_client.py" = ["RUF013"]
 "tests/**/*.py" = ["N814"]
