@@ -5,7 +5,7 @@ from typing import Any
 import pyarrow as pa
 from dlt.common.schema import TTableSchema
 
-SUPPORTED_WRITE_DISPOSITIONS = frozenset({"replace", "append", "merge", "upsert"})
+SUPPORTED_WRITE_DISPOSITIONS = frozenset({"replace", "append", "merge", "upsert", "insert-only"})
 
 
 def resolve_write_disposition(table: TTableSchema, default: str) -> str:
@@ -56,18 +56,32 @@ def combine_tables(
     existing: pa.Table | None,
     incoming: pa.Table,
     primary_key: list[str] | None,
+    fallback_key: str = "_hotdata_row_key",
 ) -> pa.Table:
-    """Arrow-native combine: avoids dict round-trip for replace and append."""
+    """Arrow-native combine: avoids dict round-trip for replace and append.
+
+    ``fallback_key`` is the row-identity column used for merge/upsert/insert-only
+    when no ``primary_key`` is declared. The sink uses ``_hotdata_row_key``; the
+    full destination preserves dlt columns and passes ``_dlt_id``.
+    """
     if disposition == "replace" or existing is None or len(existing) == 0:
         return incoming
     if disposition == "append":
         # "permissive" fills missing columns with nulls so schema drift between
         # the existing table and the incoming batch doesn't raise an error.
         return pa.concat_tables([existing, incoming], promote_options="permissive")
+    keys = primary_key or [fallback_key]
     if disposition in ("merge", "upsert"):
-        keys = primary_key or ["_hotdata_row_key"]
         merged = merge_rows(existing.to_pylist(), incoming.to_pylist(), primary_key=keys)
         return pa.Table.from_pylist(merged)
+    if disposition == "insert-only":
+        existing_keys = {row_key(row, keys) for row in existing.to_pylist()}
+        new_rows = [r for r in incoming.to_pylist() if row_key(r, keys) not in existing_keys]
+        if not new_rows:
+            return existing
+        return pa.concat_tables(
+            [existing, pa.Table.from_pylist(new_rows)], promote_options="permissive"
+        )
     raise ValueError(
         f"Unsupported write_disposition {disposition!r}. "
         f"Expected one of: {', '.join(sorted(SUPPORTED_WRITE_DISPOSITIONS))}"

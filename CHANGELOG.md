@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New native `hotdata` destination — a dlt `JobClientBase` + `WithStateSync` plugin — exported as `from hotdata_dlt_destination import hotdata`, alongside the existing `hotdata_destination` sink. It implements dlt's complete destination contract:
+  - Pipeline **state sync** (`get_stored_state`) so incremental sources restore their state from the managed database across runs.
+  - Schema versioning (`_dlt_version`) and load tracking (`_dlt_loads`); dlt internal columns (`_dlt_id`, `_dlt_load_id`) are preserved.
+  - Nested/child tables (`max_table_nesting`, default 1000) and `snake_case` identifiers.
+  - `insert-only` write disposition, in addition to `replace`/`append`/`merge`/`upsert`.
+  - Cross-run schema evolution: when an existing managed database is missing a declared table, it is recreated with the union of existing and required tables.
+- `configuration.py` (configspec), `factory.py` (`hotdata` `Destination`), `job_client.py` (`HotdataJobClient`, `HotdataLoadJob`); `hotdata_client.HotdataClient` is now a `ManagedDatabaseClient` subclass adding the union-recreate `ensure_managed_database`.
+- Tests: `tests/test_factory.py` and `tests/test_job_client.py`; `insert-only` and `_dlt_id`-fallback cases in `tests/test_merge.py`.
+
 ### Changed
 
 - Migrate the runtime dependency from `hotdata-runtime` to `hotdata-framework` (`>=0.4.0`): `hotdata_client.py` and `errors.py` now import from `hotdata_framework`; `uv.lock`, scripts, and test fixtures updated accordingly.
+- `merge.combine_tables` gained a `fallback_key` parameter (default `_hotdata_row_key`); `insert-only` added to `SUPPORTED_WRITE_DISPOSITIONS`.
 
 ## [0.4.0] - 2026-06-22
 

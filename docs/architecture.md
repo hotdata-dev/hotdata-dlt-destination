@@ -6,14 +6,27 @@ Provide a custom `dlt` destination for Hotdata managed databases with explicit c
 
 ## Components
 
-- `destination.py`: custom destination entrypoint (`@dlt.destination`)
-- `hotdata_client.py`: retry wrapper over `hotdata-runtime` managed-database APIs
+Two destinations share the lower-level modules:
+
+- `destination.py`: lightweight sink entrypoint (`@dlt.destination`), exported as `hotdata_destination`
+- `factory.py` + `job_client.py` + `configuration.py`: the native `hotdata` destination (`JobClientBase` + `WithStateSync`)
+- `hotdata_client.py`: `ManagedDatabaseClient` subclass adding cross-run schema evolution over the `hotdata-framework` managed-database APIs
 - `parquet.py`: parquet read/write for dlt load files and uploads
-- `merge.py`: read-modify-write row combining for append/merge dispositions
+- `merge.py`: row combining for append/merge/upsert/insert-only dispositions (configurable identity `fallback_key`)
 - `contracts.py`: deterministic database/schema/table mapping
-- `idempotency.py`: stable batch and row key generation
+- `idempotency.py`: stable batch and row key generation (sink only)
 - `errors.py`: transient vs terminal error mapping
 - `pipelines/`: example data pipelines
+
+## Full destination (`hotdata`)
+
+A native dlt destination implementing the complete contract via `JobClientBase` and `WithStateSync`:
+
+- Nested/child tables (`max_table_nesting`, default 1000) and `snake_case` identifiers.
+- dlt internal columns (`_dlt_id`, `_dlt_load_id`) are preserved; no `_hotdata_*` columns are added.
+- Schema versioning (`_dlt_version`), load tracking (`_dlt_loads`), and pipeline state (`_dlt_pipeline_state`) are persisted as managed tables, so `get_stored_state` lets incremental sources resume across runs.
+- Write dispositions: `replace`, `append`, `merge`, `upsert`, `insert-only`. Merge identity falls back to `_dlt_id` when no primary key is declared.
+- `initialize_storage` declares the full table set up front; if a later run needs a table the database lacks, `ensure_managed_database` recreates the database with the union of existing and required tables.
 
 ## Ingestion flow
 
