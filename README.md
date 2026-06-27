@@ -14,7 +14,7 @@ pip install hotdata-dlt-destination
 
 ```python
 import dlt
-from hotdata_dlt_destination import hotdata_destination
+from hotdata_dlt_destination import hotdata
 
 @dlt.resource(name="orders", write_disposition="append")
 def orders_resource():
@@ -25,7 +25,7 @@ def orders_resource():
 
 pipeline = dlt.pipeline(
     pipeline_name="my_pipeline",
-    destination=hotdata_destination(
+    destination=hotdata(
         database_name="sales",
         declared_tables=["orders"],
     ),
@@ -43,25 +43,7 @@ export HOTDATA_WORKSPACE=your_workspace_id
 
 That's it. On first run, the `sales` managed database is created automatically and the `orders` table is loaded.
 
-## Two destinations
-
-This package ships two destinations with the same credentials and managed-database model:
-
-- **`hotdata_destination`** (used above) — a lightweight `@dlt.destination` sink. Flat tables only, adds `_hotdata_*` idempotency columns, and keeps no dlt state/schema bookkeeping.
-- **`hotdata`** — a native dlt destination (`JobClientBase` + `WithStateSync`). Use it when you need nested/child tables, dlt's internal columns (`_dlt_id`, `_dlt_load_id`), schema versioning, load tracking, the `insert-only` write disposition, or **incremental pipeline state that round-trips through Hotdata** so dlt incremental sources resume across runs.
-
-```python
-import dlt
-from hotdata_dlt_destination import hotdata
-
-pipeline = dlt.pipeline(
-    pipeline_name="my_pipeline",
-    destination=hotdata(database_name="sales", declared_tables=["orders"]),
-)
-pipeline.run(orders_resource())
-```
-
-It accepts the same parameters as `hotdata_destination` (see below) plus `max_table_nesting` (default `1000`). It does not add `_hotdata_*` columns — it relies on dlt's `_dlt_id` for row identity. If an existing managed database is missing a declared table on a later run, it is recreated with the union of existing and required tables; existing data is snapshotted and reloaded so nothing is lost.
+`hotdata` is a native dlt destination (`JobClientBase` + `WithStateSync`): it supports nested/child tables, preserves dlt's internal columns (`_dlt_id`, `_dlt_load_id`), and persists schema-version, load, and pipeline-state tables in the managed database so **incremental sources resume correctly across runs**. If an existing managed database is missing a declared table on a later run, it is recreated with the union of existing and required tables (managed-database tables can only be declared at creation time); existing data is snapshotted and reloaded so nothing is lost.
 
 ## Configuration
 
@@ -77,7 +59,7 @@ It accepts the same parameters as `hotdata_destination` (see below) plus `max_ta
 | `max_retries` | `HOTDATA_MAX_RETRIES` | `5` | How many times to retry a failed request |
 | `retry_backoff_seconds` | `HOTDATA_RETRY_BACKOFF_SECONDS` | `1.0` | Initial wait between retries (grows with each attempt) |
 
-You can pass any of these as keyword arguments to `hotdata_destination(...)`, or set the corresponding environment variable.
+You can pass any of these as keyword arguments to `hotdata(...)`, or set the corresponding environment variable. `hotdata` also accepts `max_table_nesting` (default `1000`).
 
 ## Write modes
 
@@ -88,11 +70,12 @@ Each resource can control how its data lands in the table:
 | `replace` | Deletes everything in the table and loads the new batch. Good for full refreshes. |
 | `append` | Adds new rows to the table without touching existing data. Good for event logs and immutable records. |
 | `merge` (or `upsert`) | Updates existing rows by primary key, inserts new ones. Good for syncing a source of truth. |
+| `insert-only` | Inserts rows whose key isn't already present; never updates existing rows. |
 
 Set the default for all resources on the destination:
 
 ```python
-hotdata_destination(write_disposition="replace", ...)
+hotdata(write_disposition="replace", ...)
 ```
 
 Or set it per resource — this takes priority:
@@ -110,7 +93,7 @@ When a pipeline writes to more than one table, pass all table names to `declared
 ```python
 pipeline = dlt.pipeline(
     pipeline_name="ecommerce",
-    destination=hotdata_destination(
+    destination=hotdata(
         database_name="ecommerce",
         declared_tables=["customers", "orders", "products"],
     ),
@@ -159,16 +142,13 @@ Each pipeline run:
 2. The Parquet file is uploaded to Hotdata
 3. `load_managed_table` replaces the target table with the new data
 
-For `append` and `merge`, the destination reads the current table contents first, merges in Python, then writes the combined result back. This is done transparently — your resource just yields rows.
+For `append`, `merge`, `upsert`, and `insert-only`, the destination reads the current table contents first, combines in Python (by `primary_key`, falling back to dlt's `_dlt_id`), then writes the combined result back. This is done transparently — your resource just yields rows.
 
-Every row gets two metadata columns added automatically:
-
-- `_hotdata_batch_key` — identifies which pipeline run the row came from
-- `_hotdata_row_key` — a stable hash of the row's content, useful for deduplication
+The destination preserves dlt's native `_dlt_id` / `_dlt_load_id` columns and persists dlt's schema-version, load, and pipeline-state tables in the managed database so incremental sources can restore their state on the next run. No extra columns are added.
 
 ## Resources
 
 - [Hotdata Python SDK](https://github.com/hotdata-dev/sdk-python)
-- [hotdata-runtime](https://github.com/hotdata-dev/hotdata-runtime)
+- [hotdata-framework](https://github.com/hotdata-dev/sdk-python-framework)
 - [dlt documentation](https://dlthub.com/docs)
 - [Architecture and runbook](docs/runbook.md)

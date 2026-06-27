@@ -23,7 +23,8 @@ import urllib.request
 import dlt
 import pandas as pd
 
-from hotdata_dlt_destination.destination import hotdata_destination
+from hotdata_dlt_destination import hotdata
+from hotdata_dlt_destination.configuration import HotdataCredentials
 
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
 
@@ -88,14 +89,16 @@ def main() -> None:
 
     pipeline = dlt.pipeline(
         pipeline_name="macro_indicators",
-        destination=hotdata_destination(
-            api_key=os.environ["HOTDATA_API_KEY"],
-            workspace_id=os.environ["HOTDATA_WORKSPACE"],
+        destination=hotdata(
+            credentials=HotdataCredentials(
+                api_key=os.environ["HOTDATA_API_KEY"],
+                workspace_id=os.environ["HOTDATA_WORKSPACE"],
+            ),
             write_disposition="replace",
             declared_tables=all_tables,
             database_name="example_macro",
             create_database_if_missing=True,
-        ),  # type: ignore[call-arg]
+        ),
         dataset_name="example_macro",
     )
 

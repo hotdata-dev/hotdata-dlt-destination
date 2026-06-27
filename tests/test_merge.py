@@ -143,17 +143,6 @@ def test_combine_tables_merge_falls_back_to_dlt_id() -> None:
     assert result.to_pylist() == [{"_dlt_id": "a", "value": 2}]
 
 
-def test_combine_tables_merge_falls_back_to_hotdata_row_key() -> None:
-    # Default fallback_key for the sink path.
-    result = combine_tables(
-        disposition="merge",
-        existing=_t({"_hotdata_row_key": "a", "value": 1}),
-        incoming=_t({"_hotdata_row_key": "a", "value": 2}),
-        primary_key=None,
-    )
-    assert result.to_pylist() == [{"_hotdata_row_key": "a", "value": 2}]
-
-
 def test_combine_tables_rejects_unknown_disposition() -> None:
     with pytest.raises(ValueError, match="Unsupported write_disposition 'appned'"):
         combine_tables(
