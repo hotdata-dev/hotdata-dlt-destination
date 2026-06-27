@@ -109,6 +109,14 @@ class _FakeQueryApi:
         )
 
 
+class _FakeResultsApi:
+    def __init__(self, api):
+        pass
+
+    def get_result(self, result_id):
+        return SimpleNamespace(status="ready", result_id=result_id, error_message=None)
+
+
 class _FakeArrowResultsApi:
     def __init__(self, api):
         pass
@@ -130,6 +138,7 @@ def backend(monkeypatch):
     be = InMemoryBackend()
     _ACTIVE["backend"] = be
     monkeypatch.setattr(mc, "QueryApi", _FakeQueryApi)
+    monkeypatch.setattr(mc, "ResultsApi", _FakeResultsApi)
     monkeypatch.setattr(mc, "ArrowResultsApi", _FakeArrowResultsApi)
     monkeypatch.setattr(jc, "HotdataClient", _E2EClient)
     yield be

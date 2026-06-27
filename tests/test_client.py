@@ -117,6 +117,14 @@ def test_fetch_table_rows_reads_synced_table() -> None:
                 execution_time_ms=1,
             )
 
+    class FakeResultsApi:
+        def __init__(self, api):
+            pass
+
+        def get_result(self, result_id):
+            assert result_id == "result_1"
+            return SimpleNamespace(status="ready", result_id=result_id, error_message=None)
+
     class FakeArrowResultsApi:
         def __init__(self, api):
             pass
@@ -138,8 +146,10 @@ def test_fetch_table_rows_reads_synced_table() -> None:
             return None
 
     orig_query_api = _mod.QueryApi
+    orig_results_api = _mod.ResultsApi
     orig_arrow_api = _mod.ArrowResultsApi
     _mod.QueryApi = FakeQueryApi
+    _mod.ResultsApi = FakeResultsApi
     _mod.ArrowResultsApi = FakeArrowResultsApi
 
     client = HotdataClient(
@@ -156,6 +166,7 @@ def test_fetch_table_rows_reads_synced_table() -> None:
         assert rows == [{"id": 1, "name": "alpha"}]
     finally:
         _mod.QueryApi = orig_query_api
+        _mod.ResultsApi = orig_results_api
         _mod.ArrowResultsApi = orig_arrow_api
     client.close()
 
