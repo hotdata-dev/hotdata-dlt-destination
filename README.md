@@ -45,6 +45,74 @@ That's it. On first run, the `sales` managed database is created automatically a
 
 `hotdata` is a native dlt destination (`JobClientBase` + `WithStateSync`): it supports nested/child tables, preserves dlt's internal columns (`_dlt_id`, `_dlt_load_id`), and persists schema-version, load, and pipeline-state tables in the managed database so **incremental sources resume correctly across runs**. If an existing managed database is missing a declared table on a later run, it is recreated with the union of existing and required tables (managed-database tables can only be declared at creation time); existing data is snapshotted and reloaded so nothing is lost.
 
+## Feature support
+
+Where `hotdata` stands against the [dlt destination capability spec](https://dlthub.com/docs/dlt-ecosystem/destinations/). ✅ supported · ⚠️ supported with caveats · ❌ not supported.
+
+### Write dispositions
+
+| Disposition | Support | Notes |
+|-------------|:-------:|-------|
+| `append`    | ✅ | Existing rows kept; new batch appended (read-modify-write) |
+| `replace`   | ✅ | `truncate-and-insert` — table contents fully replaced |
+| `merge`     | ✅ | Upsert by `primary_key` — see merge strategies below |
+
+### Merge strategies
+
+| Strategy        | Support | Notes |
+|-----------------|:-------:|-------|
+| `upsert`        | ✅ | Default. Dedupes by `primary_key`, falling back to dlt's `_dlt_id` |
+| `insert-only`   | ✅ | Inserts rows whose key isn't already present; never updates existing rows |
+| `delete-insert` | ❌ | Not supported |
+| `scd2`          | ❌ | Not supported |
+
+### Replace strategies
+
+| Strategy              | Support | Notes |
+|-----------------------|:-------:|-------|
+| `truncate-and-insert` | ✅ | |
+| `insert-from-staging` | ❌ | No staging dataset |
+| `staging-optimized`   | ❌ | No staging dataset |
+
+### Keys & column hints
+
+| Feature       | Support | Notes |
+|---------------|:-------:|-------|
+| `primary_key` | ✅ | Drives merge/upsert and insert-only de-duplication |
+| `merge_key`   | ❌ | Use `primary_key` |
+| `hard_delete` | ❌ | Deletes are not propagated |
+| `dedup_sort`  | ❌ | |
+
+### Loader file formats
+
+| Format          | Support | Notes |
+|-----------------|:-------:|-------|
+| `parquet`       | ✅ | Preferred and only loader format |
+| `jsonl`         | ❌ | |
+| `insert_values` | ❌ | |
+| `csv`           | ❌ | |
+
+### Structure & lifecycle
+
+| Feature | Support | Notes |
+|---------|:-------:|-------|
+| Nested / child tables | ✅ | Up to `max_table_nesting` (default `1000`), e.g. `orders__items` |
+| dlt internal columns (`_dlt_id`, `_dlt_load_id`) | ✅ | Preserved, never stripped |
+| dlt system tables (`_dlt_loads`, `_dlt_version`) | ✅ | Persisted in the managed database |
+| Pipeline state sync (`WithStateSync`) | ✅ | Incremental sources resume across runs |
+| New columns | ✅ | Permissive column promotion on append/merge |
+| New tables | ⚠️ | Managed-DB tables are declared at creation; adding one triggers a data-preserving recreate (declare all in `declared_tables`) |
+| Multiple tables per pipeline | ✅ | Pass every table name via `declared_tables` |
+
+### Staging, transactions & identifiers
+
+| Feature | Support | Notes |
+|---------|:-------:|-------|
+| Filesystem / remote staging | ❌ | Parquet is uploaded directly to Hotdata |
+| Staging dataset | ❌ | |
+| DDL transactions | ❌ | |
+| Case-sensitive identifiers | ❌ | `snake_case`, case-insensitive; identifiers up to 255 chars |
+
 ## Configuration
 
 | Parameter | Env variable | Default | Description |
