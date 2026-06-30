@@ -73,15 +73,25 @@ def combine_tables(
     keys = primary_key or [fallback_key]
     if disposition in ("merge", "upsert"):
         merged = merge_rows(existing.to_pylist(), incoming.to_pylist(), primary_key=keys)
-        return pa.Table.from_pylist(merged)
+        # Build with the unified schema of both inputs. A bare ``pa.Table.from_pylist``
+        # infers the schema from the first row's keys and values, which silently drops
+        # incoming-only columns (existing rows sort first and lack them) and re-infers
+        # -- often narrowing -- column types. Passing the unified schema preserves every
+        # column and the widest compatible type, so the merged batch never loses a
+        # column or narrows a type relative to the existing table.
+        schema = pa.unify_schemas(
+            [existing.schema, incoming.schema], promote_options="permissive"
+        )
+        return pa.Table.from_pylist(merged, schema=schema)
     if disposition == "insert-only":
         existing_keys = {row_key(row, keys) for row in existing.to_pylist()}
         new_rows = [r for r in incoming.to_pylist() if row_key(r, keys) not in existing_keys]
         if not new_rows:
             return existing
-        return pa.concat_tables(
-            [existing, pa.Table.from_pylist(new_rows)], promote_options="permissive"
-        )
+        # Preserve the incoming schema for the new rows (same reasoning as above),
+        # then let permissive concat reconcile it with the existing table.
+        new_table = pa.Table.from_pylist(new_rows, schema=incoming.schema)
+        return pa.concat_tables([existing, new_table], promote_options="permissive")
     raise ValueError(
         f"Unsupported write_disposition {disposition!r}. "
         f"Expected one of: {', '.join(sorted(SUPPORTED_WRITE_DISPOSITIONS))}"

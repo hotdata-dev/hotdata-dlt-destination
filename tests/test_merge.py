@@ -143,6 +143,48 @@ def test_combine_tables_merge_falls_back_to_dlt_id() -> None:
     assert result.to_pylist() == [{"_dlt_id": "a", "value": 2}]
 
 
+def test_combine_tables_merge_promotes_new_column() -> None:
+    # Incoming introduces a column the existing table lacks. It must survive the
+    # merge (existing rows get null), not be dropped by first-row schema inference.
+    existing = _t({"id": 1, "v": "a"}, {"id": 2, "v": "b"})
+    incoming = _t({"id": 2, "v": "B", "tier": "gold"}, {"id": 3, "v": "c", "tier": "silver"})
+    result = combine_tables(
+        disposition="merge", existing=existing, incoming=incoming, primary_key=["id"]
+    )
+    assert "tier" in result.column_names
+    by = {r["id"]: r for r in result.to_pylist()}
+    assert by[1]["tier"] is None
+    assert by[2]["tier"] == "gold"
+    assert by[3] == {"id": 3, "v": "c", "tier": "silver"}
+
+
+def test_combine_tables_merge_preserves_existing_column_type() -> None:
+    # A bare from_pylist would re-infer `bal` from the values (e.g. decimal(4, 2)),
+    # narrowing the existing decimal(12, 2) column and breaking the load.
+    import decimal
+
+    schema = pa.schema([("id", pa.int64()), ("bal", pa.decimal128(12, 2))])
+    existing = pa.table({"id": [1], "bal": [decimal.Decimal("100.25")]}, schema=schema)
+    incoming = pa.table({"id": [1], "bal": [decimal.Decimal("50.00")]}, schema=schema)
+    result = combine_tables(
+        disposition="merge", existing=existing, incoming=incoming, primary_key=["id"]
+    )
+    assert result.schema.field("bal").type == pa.decimal128(12, 2)
+    assert result.to_pylist() == [{"id": 1, "bal": decimal.Decimal("50.00")}]
+
+
+def test_combine_tables_insert_only_promotes_new_column() -> None:
+    existing = _t({"id": 1, "v": "a"})
+    incoming = _t({"id": 2, "v": "b", "tier": "gold"})
+    result = combine_tables(
+        disposition="insert-only", existing=existing, incoming=incoming, primary_key=["id"]
+    )
+    assert "tier" in result.column_names
+    by = {r["id"]: r for r in result.to_pylist()}
+    assert by[1]["tier"] is None
+    assert by[2]["tier"] == "gold"
+
+
 def test_combine_tables_rejects_unknown_disposition() -> None:
     with pytest.raises(ValueError, match="Unsupported write_disposition 'appned'"):
         combine_tables(

@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `merge`/`upsert`/`insert-only` loads no longer drop columns or narrow column types. `combine_tables` rebuilt the merged batch with `pa.Table.from_pylist`, which infers the schema from the first row — silently dropping columns present only in incoming rows (existing rows sort first and lack them) and re-inferring, often narrowing, column types. The latter could fail the load with a 409 type conflict (e.g. `decimal(12, 2)` → `decimal(5, 2)`). The merged batch is now built with the unified schema of the existing and incoming tables, so columns and types are preserved.
+
 ### Changed
 
 - Schema evolution now declares missing tables in place via `add_managed_table` instead of recreating the managed database. Adding a table on a later run no longer snapshots, deletes, and reloads existing data — existing tables (including dlt bookkeeping) are left untouched. Requires `hotdata-framework>=0.6.0`.
+- Clarified the write-modes documentation: dlt resources accept `append`/`replace`/`merge` only; `merge` is upsert-by-primary-key (what `upsert` resolves to), and `insert-only` is not selectable as a resource `write_disposition`.
 
 
 ## [0.5.0] - 2026-06-29
