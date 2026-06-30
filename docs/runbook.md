@@ -52,5 +52,5 @@
 - `401` / `403`: verify `HOTDATA_API_KEY` and `HOTDATA_WORKSPACE`.
 - `404` on destination paths: verify `HOTDATA_API_BASE_URL` is the API host (for example `https://api.hotdata.dev`).
 - `429` / `5xx`: increase retry/backoff values.
-- `table not declared`: recreate the managed database with all target tables in `declared_tables`, or declare them at create time.
+- `table not declared`: list every target table in `declared_tables`. Missing tables are otherwise added to the database in place on the next run.
 - Append/merge loads re-read the full target table each batch; large tables may be slow until native append/merge API support lands.
