@@ -1,6 +1,5 @@
 from types import SimpleNamespace
 
-import pyarrow as pa
 import pytest
 
 from hotdata_dlt_destination.hotdata_client import HotdataClient
@@ -204,6 +203,7 @@ class _EvoRuntime:
         self._existing_tables = list(existing_tables)
         self.created: list[tuple] = []
         self.deleted: list[str] = []
+        self.added: list[tuple] = []
         self.uploaded: list[str] = []
         self.loaded: list[tuple] = []
 
@@ -214,6 +214,11 @@ class _EvoRuntime:
 
     def list_managed_tables(self, name, *, schema):
         return [SimpleNamespace(table=t) for t in self._existing_tables]
+
+    def add_managed_table(self, database, table, *, schema):
+        self.added.append((database, table, schema))
+        self._existing_tables.append(table)
+        return SimpleNamespace(table=table, schema=schema)
 
     def create_managed_database(self, *, description, schema, tables):
         self.created.append((description, schema, list(tables)))
@@ -276,22 +281,21 @@ def test_ensure_noop_when_all_tables_present() -> None:
     client.close()
 
 
-def test_ensure_union_recreate_preserves_data(monkeypatch) -> None:
+def test_ensure_adds_missing_table_without_recreate() -> None:
     rt = _EvoRuntime(existing_db=SimpleNamespace(id="db_1"), existing_tables=["orders"])
     client = _client_with(rt)
-    snapshot = pa.table({"id": [1], "_dlt_id": ["a"]})
-    monkeypatch.setattr(client, "fetch_table", lambda *, database, schema, table: snapshot)
 
     client.ensure_managed_database(
         "db", schema="public", tables=["orders", "customers"], create_if_missing=True
     )
 
-    # Recreated with the union, old database deleted, and the existing table's
-    # data reloaded into the new database (no data loss).
-    assert rt.created == [("db", "public", ["customers", "orders"])]
-    assert rt.deleted == ["db_1"]
-    assert rt.loaded == [("db", "orders", "public", "up_1")]
-    assert len(rt.uploaded) == 1
+    # The missing table is declared in place; the database is never deleted or
+    # recreated and no data is moved.
+    assert rt.added == [("db", "customers", "public")]
+    assert rt.deleted == []
+    assert rt.created == []
+    assert rt.uploaded == []
+    assert rt.loaded == []
     client.close()
 
 

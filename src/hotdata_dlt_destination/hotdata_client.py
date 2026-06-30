@@ -1,26 +1,20 @@
 from __future__ import annotations
 
-import contextlib
-import os
-import tempfile
-
-import pyarrow as pa
 from hotdata_framework.databases import ManagedDatabase
 from hotdata_framework.managed_client import ManagedDatabaseClient
-
-from hotdata_dlt_destination.parquet import write_table_parquet
 
 
 class HotdataClient(ManagedDatabaseClient):
     """Managed-database client used by the dlt destination.
 
     Adds cross-run schema evolution on top of the shared ``hotdata_framework``
-    client. Managed-database tables can only be declared at creation time, so
-    when an existing database is missing a required table the database must be
-    recreated. To avoid losing data (including dlt's ``_dlt_version`` /
-    ``_dlt_loads`` / ``_dlt_pipeline_state`` bookkeeping, which powers state
-    sync), every existing table is snapshotted, the database is recreated with
-    the union of existing and required tables, and the snapshots are reloaded.
+    client. The base client only creates a managed database with its initial
+    tables; this override additionally reconciles tables on an already-existing
+    database. When a later run requires a table that the database is missing,
+    the table is declared in place via ``add_managed_table`` (the table is added
+    empty and populated by the subsequent load) — no data is moved and existing
+    tables, including dlt's ``_dlt_version`` / ``_dlt_loads`` /
+    ``_dlt_pipeline_state`` bookkeeping, are left untouched.
     """
 
     def ensure_managed_database(
@@ -52,27 +46,16 @@ class HotdataClient(ManagedDatabaseClient):
                 lambda: runtime.list_managed_tables(name, schema=schema)
             )
         }
-        if not set(tables) - existing:
-            return db
+        # Declare any newly-required tables additively, in place. dlt calls
+        # ``initialize_storage`` with the full table set before any load job runs,
+        # so by load time this is normally a no-op.
+        for table in sorted(set(tables) - existing):
+            self._add_managed_table(name, table, schema=schema)
+        return db
 
-        # Snapshot existing data before the destructive recreate so no rows are
-        # lost when a new table is added on a later run.
-        all_tables = sorted(existing | set(tables))
-        snapshots: dict[str, pa.Table] = {}
-        for table in sorted(existing):
-            data = self.fetch_table(database=name, schema=schema, table=table)
-            if data is not None and data.num_rows:
-                snapshots[table] = data
-
-        self._request_with_retry(lambda: runtime.delete_managed_database(db.id))
-        new_db = self._request_with_retry(
-            lambda: runtime.create_managed_database(
-                description=name, schema=schema, tables=all_tables
-            )
-        )
-        for table, data in snapshots.items():
-            self._reload_table(name, table, schema=schema, data=data)
-        return new_db
+    def _add_managed_table(self, name: str, table: str, *, schema: str) -> None:
+        runtime = self._runtime
+        self._request_with_retry(lambda: runtime.add_managed_table(name, table, schema=schema))
 
     def drop_managed_database(self, name: str) -> None:
         """Delete the managed database if it exists (used for dlt dev_mode / refresh)."""
@@ -82,17 +65,6 @@ class HotdataClient(ManagedDatabaseClient):
         except KeyError:
             return
         self._request_with_retry(lambda: runtime.delete_managed_database(db.id))
-
-    def _reload_table(self, database: str, table: str, *, schema: str, data: pa.Table) -> None:
-        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as handle:
-            path = handle.name
-        try:
-            write_table_parquet(data, path)
-            upload_id = self.upload_parquet(path)
-            self.load_managed_table(database, table, schema=schema, upload_id=upload_id)
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(path)
 
 
 __all__ = ["HotdataClient"]

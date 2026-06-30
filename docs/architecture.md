@@ -25,14 +25,14 @@ Provide a native `dlt` destination for Hotdata managed databases with explicit c
 - dlt internal columns (`_dlt_id`, `_dlt_load_id`) are preserved; no extra columns are added.
 - Schema versioning (`_dlt_version`), load tracking (`_dlt_loads`), and pipeline state (`_dlt_pipeline_state`) are persisted as managed tables, so `get_stored_state` lets incremental sources resume across runs.
 - Write dispositions: `replace`, `append`, `merge`, `upsert`, `insert-only`. Merge identity falls back to `_dlt_id` when no primary key is declared.
-- `initialize_storage` declares the full table set (internal + user + schema tables) up front; if a later run needs a table the database lacks, `ensure_managed_database` recreates the database with the union of existing and required tables. Because tables can only be declared at creation time, the recreate snapshots every existing table first and reloads it afterward, so no data (including dlt bookkeeping) is lost.
+- `initialize_storage` declares the full table set (internal + user + schema tables) up front; if a later run needs a table the database lacks, `ensure_managed_database` declares it in place via `add_managed_table`. Existing tables (including dlt bookkeeping) are left untouched and no data is moved.
 
 ## Ingestion flow
 
 1. `dlt` writes a parquet load file and hands its path plus the `table` schema to `HotdataLoadJob`.
 2. Contract mapping converts table metadata into `{database}.{schema}.{table}` naming.
 3. Write disposition comes from the dlt table schema, falling back to the destination default.
-4. Managed database is resolved or created (`ensure_managed_database`, with union-recreate on missing tables).
+4. Managed database is resolved or created (`ensure_managed_database`, which declares any missing tables in place).
 5. Load path uses only supported API operations:
    - `replace`: upload parquet batch and `load_managed_table(replace)` on the target
    - `append` / `merge` / `upsert` / `insert-only`: fetch existing target rows, combine in Python, then replace the target
@@ -49,5 +49,5 @@ Provide a native `dlt` destination for Hotdata managed databases with explicit c
 ## Known limitations
 
 - Managed-table loads only support `mode=replace`; append/merge/upsert/insert-only are emulated via read-modify-write.
-- Tables must be declared when the managed database is created; use `declared_tables` for multi-table pipelines. When a declared table is missing on a later run the database is recreated with the table union; existing data is snapshotted and reloaded, so the recreate is transparent (at the cost of re-uploading every table).
+- Use `declared_tables` for multi-table pipelines so every table is declared up front. A table that is missing on a later run is added to the existing database in place (via `add_managed_table`) — no recreate and no data movement.
 - Read-modify-write reads the full target table on every non-replace batch.
