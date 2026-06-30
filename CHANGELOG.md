@@ -13,8 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Schema evolution now declares missing tables in place via `add_managed_table` instead of recreating the managed database. Adding a table on a later run no longer snapshots, deletes, and reloads existing data — existing tables (including dlt bookkeeping) are left untouched. Requires `hotdata-framework>=0.6.0`.
 - Clarified the write-modes documentation: dlt resources accept `append`/`replace`/`merge` only; `merge` is upsert-by-primary-key (what `upsert` resolves to), and `insert-only` is not selectable as a resource `write_disposition`.
 
+
+## [0.5.0] - 2026-06-29
+
+### Changed
+
+- Bump the `hotdata-framework` floor to `>=0.5.0` and the `hotdata` SDK to `0.5.0`. Framework 0.5.0 is backward compatible (additive-only: an optional `format` field on `LoadManagedTableRequest` and an optional `format` parameter on `ResultsApi.get_result`), so no source changes were required; the full test suite passes.
 
 ## [0.4.2] - 2026-06-29
 

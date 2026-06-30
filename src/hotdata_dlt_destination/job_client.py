@@ -234,9 +234,9 @@ class HotdataJobClient(JobClientBase, WithStateSync):
                 return False
 
     def drop_storage(self) -> None:
-        # dlt calls this on dev_mode / refresh to wipe the destination. Managed-database
-        # tables can only be declared at creation time, so drop the whole database;
-        # initialize_storage recreates it on the next run.
+        # dlt calls this on dev_mode / refresh to wipe the destination. Dropping the
+        # whole managed database is the simplest correct reset; initialize_storage
+        # recreates it on the next run.
         try:
             with _hotdata_api(self.config) as api:
                 api.drop_managed_database(self.config.database_name)

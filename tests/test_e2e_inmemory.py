@@ -73,6 +73,11 @@ class InMemoryBackend:
         for key in [k for k in self.tables if k[0] == name]:
             del self.tables[key]
 
+    def add_managed_table(self, database, table, *, schema):
+        name = self.id_to_name.get(database, database)
+        self.declared.setdefault(name, set()).add(table)
+        return SimpleNamespace(table=table, var_schema=schema, synced=False)
+
     def upload_parquet(self, path):
         self._n += 1
         uid = f"up_{self._n}"
@@ -248,8 +253,9 @@ def test_schema_evolution_preserves_data(backend, tmp_path):
         pipelines_dir=str(tmp_path / "r1"),
     ).run(orders())
     assert len(backend.rows("e2e_evo", "orders")) == 1
+    db_id_before = backend.name_to_id["e2e_evo"]
 
-    # Adding a new table triggers the union-recreate; existing data must survive.
+    # Adding a new table declares it in place (no recreate); existing data survives.
     dlt.pipeline(
         pipeline_name="p_evo",
         destination=_dest("e2e_evo", ["orders", "customers"]),
@@ -257,6 +263,8 @@ def test_schema_evolution_preserves_data(backend, tmp_path):
         pipelines_dir=str(tmp_path / "r2"),
     ).run([customers()])
 
+    # The database was never deleted/recreated — same id throughout.
+    assert backend.name_to_id["e2e_evo"] == db_id_before
     orders_after = backend.rows("e2e_evo", "orders")
     assert orders_after is not None and len(orders_after) == 1 and orders_after[0]["id"] == 1
     assert backend.rows("e2e_evo", "customers") is not None
