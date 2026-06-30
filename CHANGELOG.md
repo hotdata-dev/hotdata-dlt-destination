@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Schema evolution now declares missing tables in place via `add_managed_table` instead of recreating the managed database. Adding a table on a later run no longer snapshots, deletes, and reloads existing data — existing tables (including dlt bookkeeping) are left untouched. Requires `hotdata-framework>=0.6.0`.
+
 
 ## [0.4.2] - 2026-06-29
 
