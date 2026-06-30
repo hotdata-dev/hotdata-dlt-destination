@@ -137,8 +137,9 @@ Each resource can control how its data lands in the table:
 |------|-------------|
 | `replace` | Deletes everything in the table and loads the new batch. Good for full refreshes. |
 | `append` | Adds new rows to the table without touching existing data. Good for event logs and immutable records. |
-| `merge` (or `upsert`) | Updates existing rows by primary key, inserts new ones. Good for syncing a source of truth. |
-| `insert-only` | Inserts rows whose key isn't already present; never updates existing rows. |
+| `merge` (= `upsert`) | Updates existing rows by primary key, inserts new ones. Good for syncing a source of truth. |
+
+> dlt resources set `write_disposition` to `append`, `replace`, or `merge` only. `merge` performs upsert-by-primary-key — it is what the internal `upsert` disposition resolves to, so there is no separate `upsert` to set. The destination also implements an `insert-only` combine (insert rows whose key isn't already present, never updating existing rows), but dlt does not expose it as a resource `write_disposition`, so it cannot be selected per resource.
 
 Set the default for all resources on the destination:
 
