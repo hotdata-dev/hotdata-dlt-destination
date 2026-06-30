@@ -280,7 +280,7 @@ wheels = [
 
 [[package]]
 name = "hotdata-dlt-destination"
-version = "0.4.2"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "dlt" },
@@ -301,7 +301,7 @@ dev = [
 requires-dist = [
     { name = "dlt", specifier = ">=1.28.1" },
     { name = "hotdata", specifier = ">=0.5.0" },
-    { name = "hotdata-framework", specifier = ">=0.4.1" },
+    { name = "hotdata-framework", specifier = ">=0.5.0" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=14" },
 ]
@@ -315,16 +315,16 @@ dev = [
 
 [[package]]
 name = "hotdata-framework"
-version = "0.4.1"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hotdata" },
     { name = "pandas" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a9/0a/3eb08d60328546d620c584ca9bde858c55d08f4a4daeaa98ebedf8b2c354/hotdata_framework-0.4.1.tar.gz", hash = "sha256:e692ee27fdb737c7fab76522efecedfa7e66d7f1d5786e99b194856daf552f9d", size = 93833, upload-time = "2026-06-27T15:21:46.422Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/04/cad9fafac70f0f7b851329b4b3c1824ddbd07c704015cc5d91840e19d73c/hotdata_framework-0.5.0.tar.gz", hash = "sha256:323a69e7beb8fcab35814fad090b0203f3b7b5a857816b93cab09ef081996f78", size = 93962, upload-time = "2026-06-29T07:01:28.25Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/e2/35c369229a1e5fe14daee6d8935288b8c7463aada3f7c10cc1625e347254/hotdata_framework-0.4.1-py3-none-any.whl", hash = "sha256:fa984f26874706788723d1400bab9413e29932773851c1355d97ce4d214123fa", size = 14077, upload-time = "2026-06-27T15:21:44.913Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/5c/1a7ce4125a1332aaf9a0fd19fd1e659815fa6b83174c040bff8b53acaf3f/hotdata_framework-0.5.0-py3-none-any.whl", hash = "sha256:280e651d261f314e894bcbd7fb65135af100c02537f765d9877e013d2c16c257", size = 14078, upload-time = "2026-06-29T07:01:26.806Z" },
 ]
 
 [[package]]
