@@ -16,7 +16,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dlt.common.destination import DestinationCapabilitiesContext
 from dlt.common.destination.client import (
@@ -38,6 +38,7 @@ from dlt.common.schema.typing import (
     VERSION_TABLE_NAME,
     TTableSchema,
 )
+from dlt.destinations.sql_client import SqlClientBase, WithSqlClient
 
 from hotdata_dlt_destination.configuration import HotdataClientConfiguration
 from hotdata_dlt_destination.contracts import TableContract
@@ -49,6 +50,9 @@ from hotdata_dlt_destination.merge import (
     resolve_write_disposition,
 )
 from hotdata_dlt_destination.parquet import write_table_parquet
+
+if TYPE_CHECKING:
+    from hotdata_dlt_destination.sql_client import HotdataSqlClient
 
 _INTERNAL_TABLE_NAMES = frozenset({VERSION_TABLE_NAME, LOADS_TABLE_NAME, PIPELINE_STATE_TABLE_NAME})
 
@@ -179,7 +183,7 @@ class HotdataLoadJob(RunnableLoadJob):
             raise DestinationTransientException(str(exc)) from exc
 
 
-class HotdataJobClient(JobClientBase, WithStateSync):
+class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
     """dlt job client for the Hotdata managed-database destination."""
 
     def __init__(
@@ -190,6 +194,30 @@ class HotdataJobClient(JobClientBase, WithStateSync):
     ) -> None:
         super().__init__(schema, config, capabilities)
         self.config: HotdataClientConfiguration = config
+        self._sql_client: HotdataSqlClient | None = None
+
+    @property
+    def sql_client_class(self) -> type[SqlClientBase]:
+        from hotdata_dlt_destination.sql_client import HotdataSqlClient
+
+        return HotdataSqlClient
+
+    @property
+    def sql_client(self) -> HotdataSqlClient:
+        # Advertised via WithSqlClient so dlt's dataset read API
+        # (`pipeline.dataset()`) can query loaded data. Addressing mirrors the
+        # write path (managed database_name + fixed schema), so reads return
+        # what writes wrote.
+        from hotdata_dlt_destination.sql_client import HotdataSqlClient
+
+        if self._sql_client is None:
+            self._sql_client = HotdataSqlClient(
+                self.config.database_name,
+                self.config.schema,
+                self.capabilities,
+                self.config,
+            )
+        return self._sql_client
 
     def initialize_storage(self, truncate_tables: Iterable[str] = None) -> None:
         internal = [

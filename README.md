@@ -45,6 +45,25 @@ That's it. On first run, the `sales` managed database is created automatically a
 
 `hotdata` is a native dlt destination (`JobClientBase` + `WithStateSync`): it supports nested/child tables, preserves dlt's internal columns (`_dlt_id`, `_dlt_load_id`), and persists schema-version, load, and pipeline-state tables in the managed database so **incremental sources resume correctly across runs**. If an existing managed database is missing a declared table on a later run, the table is added to it in place; existing tables and their data are left untouched.
 
+## Read your data back
+
+The **same `pipeline` object** that writes can read, through dlt's standard [dataset interface](https://dlthub.com/docs/general-usage/dataset-access/dataset) — no Hotdata-specific code, no database IDs, no hand-written SQL:
+
+```python
+ds = pipeline.dataset()
+
+ds.table("orders").df()      # whole table -> pandas.DataFrame
+ds.table("orders").arrow()   # -> pyarrow.Table
+
+# raw SQL
+ds("SELECT customer, sum(total) AS spend FROM orders GROUP BY customer").df()
+
+# fluent
+ds.table("orders").select("id", "total").where("total > 50").order_by("total").limit(10).df()
+```
+
+Queries run server-side on Hotdata's Apache DataFusion engine (Postgres-compatible SQL). It's the same read API you'd use with the `duckdb`, `postgres`, or `bigquery` destinations — enabled because `hotdata` advertises dlt's SQL-client interface (`WithSqlClient`).
+
 ## Feature support
 
 Where `hotdata` stands against the [dlt destination capability spec](https://dlthub.com/docs/dlt-ecosystem/destinations/). ✅ supported · ⚠️ supported with caveats · ❌ not supported.
@@ -100,6 +119,7 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 | dlt internal columns (`_dlt_id`, `_dlt_load_id`) | ✅ | Preserved, never stripped |
 | dlt system tables (`_dlt_loads`, `_dlt_version`) | ✅ | Persisted in the managed database |
 | Pipeline state sync (`WithStateSync`) | ✅ | Incremental sources resume across runs |
+| Dataset read API (`pipeline.dataset()`) | ✅ | Read loaded data as pandas / arrow / fluent SQL, server-side on DataFusion — see [Read your data back](#read-your-data-back) |
 | New columns | ✅ | Permissive column promotion on append/merge |
 | New tables | ✅ | A table missing on a later run is declared in place on the existing database — no recreate, no data movement |
 | Multiple tables per pipeline | ✅ | Pass every table name via `declared_tables` |

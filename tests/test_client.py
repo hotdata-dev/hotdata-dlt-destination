@@ -170,6 +170,127 @@ def test_fetch_table_rows_reads_synced_table() -> None:
     client.close()
 
 
+class _RecorderApi:
+    """Fake HTTP api client that records default headers set on it."""
+
+    def __init__(self) -> None:
+        self.headers: dict[str, str] = {}
+
+    def set_default_header(self, key: str, value: str) -> None:
+        self.headers[key] = value
+
+
+def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool) -> None:
+    """Patch the query/result APIs so no real HTTP happens.
+
+    ``fetch_table`` resolves ArrowResultsApi from hotdata_framework.managed_client;
+    ``execute_sql`` resolves it from hotdata_dlt_destination.hotdata_client.
+    """
+    import pyarrow as pa  # noqa: F401  (arrow_table already built by caller)
+    from hotdata.models.query_response import QueryResponse as _QR
+
+    class FakeQueryApi:
+        def __init__(self, api):
+            pass
+
+        def query(self, request, *, x_database_id):
+            return _QR(
+                columns=["id"],
+                rows=[[1]],
+                row_count=1,
+                preview_row_count=1,
+                truncated=False,
+                nullable=[False],
+                result_id="r1",
+                query_run_id="q1",
+                execution_time_ms=1,
+            )
+
+    class FakeResultsApi:
+        def __init__(self, api):
+            pass
+
+        def get_result(self, result_id):
+            return SimpleNamespace(status="ready", result_id=result_id, error_message=None)
+
+    class FakeArrowResultsApi:
+        def __init__(self, api):
+            pass
+
+        def get_result_arrow(self, result_id):
+            return arrow_table
+
+    monkeypatch.setattr("hotdata_framework.managed_client.QueryApi", FakeQueryApi)
+    monkeypatch.setattr("hotdata_framework.managed_client.ResultsApi", FakeResultsApi)
+    monkeypatch.setattr("hotdata_framework.managed_client.ArrowResultsApi", FakeArrowResultsApi)
+    if arrow_in_hotdata_client:
+        monkeypatch.setattr(
+            "hotdata_dlt_destination.hotdata_client.ArrowResultsApi", FakeArrowResultsApi
+        )
+
+
+def _client_with_runtime(runtime) -> HotdataClient:
+    client = HotdataClient(
+        api_key="k",
+        workspace_id="ws_1",
+        api_base_url="https://api.hotdata.dev",
+        max_retries=1,
+        retry_backoff_seconds=0.0,
+    )
+    client._runtime = runtime
+    return client
+
+
+def test_fetch_table_pins_database_id_header(monkeypatch) -> None:
+    # Hosted result endpoints reject requests without X-Database-Id; fetch_table
+    # (merge / state-sync read-back) must pin it before the base polls get_result.
+    import pyarrow as pa
+
+    _patch_query_apis(monkeypatch, pa.table({"id": [1]}), arrow_in_hotdata_client=False)
+
+    class FakeRuntime:
+        def __init__(self):
+            self.api = _RecorderApi()
+
+        def list_managed_tables(self, database, *, schema):
+            return [SimpleNamespace(table="orders", synced=True)]
+
+        def resolve_managed_database(self, name):
+            return SimpleNamespace(id="db_42")
+
+        def close(self):
+            return None
+
+    client = _client_with_runtime(FakeRuntime())
+    table = client.fetch_table(database="dlt", schema="public", table="orders")
+    assert table is not None and table.num_rows == 1
+    assert client._runtime.api.headers.get("X-Database-Id") == "db_42"
+    client.close()
+
+
+def test_execute_sql_pins_database_id_header(monkeypatch) -> None:
+    # The read/dataset path pins the header too.
+    import pyarrow as pa
+
+    _patch_query_apis(monkeypatch, pa.table({"id": [1, 2]}), arrow_in_hotdata_client=True)
+
+    class FakeRuntime:
+        def __init__(self):
+            self.api = _RecorderApi()
+
+        def resolve_managed_database(self, name):
+            return SimpleNamespace(id="db_99")
+
+        def close(self):
+            return None
+
+    client = _client_with_runtime(FakeRuntime())
+    table = client.execute_sql('SELECT * FROM "default"."public"."spans"', database="dlt")
+    assert table.num_rows == 2
+    assert client._runtime.api.headers.get("X-Database-Id") == "db_99"
+    client.close()
+
+
 def test_fetch_table_rows_returns_empty_when_table_missing() -> None:
     class FakeRuntime:
         def list_managed_tables(self, database: str, *, schema: str):
