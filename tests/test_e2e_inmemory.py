@@ -9,6 +9,7 @@ schema-evolution recreate.
 
 from __future__ import annotations
 
+import datetime
 import re
 from types import SimpleNamespace
 
@@ -21,6 +22,7 @@ from dlt.common.schema import Schema
 from hotdata.models.query_response import QueryResponse
 
 import hotdata_dlt_destination.job_client as jc
+import hotdata_dlt_destination.sql_client as sc
 from hotdata_dlt_destination import hotdata
 from hotdata_dlt_destination.configuration import HotdataClientConfiguration, HotdataCredentials
 from hotdata_dlt_destination.hotdata_client import HotdataClient as RealHotdataClient
@@ -39,6 +41,7 @@ class InMemoryBackend:
         self.declared: dict[str, set[str]] = {}
         self.tables: dict[tuple, pa.Table] = {}
         self.uploads: dict[str, pa.Table] = {}
+        self.results: dict[str, pa.Table] = {}
         self._n = 0
 
     def close(self) -> None:
@@ -89,6 +92,37 @@ class InMemoryBackend:
         self.tables[(name, schema, table)] = self.uploads[upload_id]
         return SimpleNamespace(full_name=f"{name}.{schema}.{table}")
 
+    def execute_sql(self, database, sql):
+        """Execute SQL over this database's stored Arrow tables.
+
+        A plain ``SELECT * FROM "default"."<schema>"."<table>"`` (what the write
+        path's ``fetch_table`` emits) short-circuits to the exact stored table so
+        the write-path tests see byte-identical data. Anything richer (the dataset
+        read path: WHERE / LIMIT / aggregates / column projection) runs on a real
+        DataFusion session so dialect behavior matches the production engine.
+        """
+        m = re.fullmatch(
+            r'\s*SELECT \* FROM "default"\."([^"]+)"\."([^"]+)"\s*', sql, flags=re.IGNORECASE
+        )
+        if m:
+            return self.tables[(database, m.group(1), m.group(2))]
+
+        from datafusion import SessionContext
+
+        ctx = SessionContext()
+        for (db, _schema, table), tbl in self.tables.items():
+            if db == database:
+                ctx.register_record_batches(table, [tbl.to_batches()])
+        # Strip the "default"."<schema>". qualifier so bare table names resolve.
+        rewritten = re.sub(r'"default"\."[^"]+"\.(?=")', "", sql)
+        return ctx.sql(rewritten).to_arrow_table()
+
+    def store_result(self, table):
+        self._n += 1
+        rid = f"res_{self._n}"
+        self.results[rid] = table
+        return rid
+
     # test helper
     def rows(self, database, table, schema="public"):
         t = self.tables.get((database, schema, table))
@@ -100,15 +134,17 @@ class _FakeQueryApi:
         pass
 
     def query(self, request, *, x_database_id):
-        m = re.search(r'"default"\."([^"]+)"\."([^"]+)"', request.sql)
+        be = _ACTIVE["backend"]
+        database = be.id_to_name[x_database_id]
+        result = be.execute_sql(database, request.sql)
         return QueryResponse(
             columns=[],
             rows=[],
-            row_count=0,
+            row_count=result.num_rows,
             preview_row_count=0,
             truncated=False,
             nullable=[],
-            result_id=f"{x_database_id}|{m.group(1)}|{m.group(2)}",
+            result_id=be.store_result(result),
             query_run_id="qr",
             execution_time_ms=1,
         )
@@ -127,9 +163,7 @@ class _FakeArrowResultsApi:
         pass
 
     def get_result_arrow(self, result_id):
-        db_id, schema, table = result_id.split("|")
-        be = _ACTIVE["backend"]
-        return be.tables[(be.id_to_name[db_id], schema, table)]
+        return _ACTIVE["backend"].results[result_id]
 
 
 class _E2EClient(RealHotdataClient):
@@ -145,7 +179,12 @@ def backend(monkeypatch):
     monkeypatch.setattr(mc, "QueryApi", _FakeQueryApi)
     monkeypatch.setattr(mc, "ResultsApi", _FakeResultsApi)
     monkeypatch.setattr(mc, "ArrowResultsApi", _FakeArrowResultsApi)
+    # hotdata_client.py also references ArrowResultsApi (for execute_sql).
+    monkeypatch.setattr(
+        "hotdata_dlt_destination.hotdata_client.ArrowResultsApi", _FakeArrowResultsApi
+    )
     monkeypatch.setattr(jc, "HotdataClient", _E2EClient)
+    monkeypatch.setattr(sc, "HotdataClient", _E2EClient)
     yield be
     _ACTIVE.pop("backend", None)
 
@@ -235,6 +274,130 @@ def test_merge_dedup(backend, tmp_path):
 
     by_id = {r["id"]: r["name"] for r in backend.rows("e2e_merge", "users")}
     assert by_id == {1: "new", 2: "keep", 3: "added"}
+
+
+def _spans_pipeline(tmp_path):
+    @dlt.resource(name="spans", write_disposition="replace")
+    def spans():
+        yield [
+            {"span_id": "a1", "model": "claude-opus-4-8", "latency_ms": 812, "ok": True},
+            {"span_id": "a2", "model": "claude-sonnet-5", "latency_ms": 240, "ok": True},
+            {"span_id": "a3", "model": "claude-opus-4-8", "latency_ms": 590, "ok": False},
+        ]
+
+    pipe = dlt.pipeline(
+        pipeline_name="p_read",
+        destination=_dest("e2e_read", ["spans"], "replace"),
+        dataset_name="public",
+        pipelines_dir=str(tmp_path),
+    )
+    pipe.run(spans())
+    return pipe
+
+
+def test_dataset_read_roundtrip_df(backend, tmp_path):
+    pipe = _spans_pipeline(tmp_path)
+    df = pipe.dataset().table("spans").df()
+    got = {(r.span_id, r.model, r.latency_ms, r.ok) for r in df.itertuples()}
+    assert got == {
+        ("a1", "claude-opus-4-8", 812, True),
+        ("a2", "claude-sonnet-5", 240, True),
+        ("a3", "claude-opus-4-8", 590, False),
+    }
+
+
+def test_dataset_read_arrow(backend, tmp_path):
+    pipe = _spans_pipeline(tmp_path)
+    tbl = pipe.dataset().table("spans").arrow()
+    assert tbl.num_rows == 3
+    assert {"span_id", "model", "latency_ms", "ok"} <= set(tbl.column_names)
+
+
+def test_dataset_raw_sql_aggregate(backend, tmp_path):
+    pipe = _spans_pipeline(tmp_path)
+    df = pipe.dataset()(
+        "SELECT model, avg(latency_ms) AS p FROM spans GROUP BY model ORDER BY model"
+    ).df()
+    by_model = {r.model: r.p for r in df.itertuples()}
+    assert by_model["claude-sonnet-5"] == 240
+    assert by_model["claude-opus-4-8"] == (812 + 590) / 2
+
+
+def test_dataset_fluent_filters(backend, tmp_path):
+    pipe = _spans_pipeline(tmp_path)
+    df = pipe.dataset().table("spans").select("span_id", "latency_ms").where("ok").order_by(
+        "latency_ms"
+    ).limit(1).df()
+    assert list(df["span_id"]) == ["a2"]
+    assert list(df["latency_ms"]) == [240]
+
+
+def test_dataset_row_counts(backend, tmp_path):
+    pipe = _spans_pipeline(tmp_path)
+    counts = pipe.dataset().row_counts(table_names=["spans"]).df()
+    row = {r.table_name: r.row_count for r in counts.itertuples()}
+    assert row["spans"] == 3
+
+
+def test_has_dataset_true_after_load(backend, tmp_path):
+    pipe = _spans_pipeline(tmp_path)
+    with pipe.dataset().sql_client as client:
+        assert client.has_dataset() is True
+
+
+def test_read_preserves_column_types(backend, tmp_path):
+    # We never inspect or coerce values -- the cursor hands the engine's Arrow
+    # table straight to pandas/arrow. This guards the *pipeline* (dlt normalize ->
+    # parquet -> DataFusion -> Arrow -> pandas) preserving representative types.
+    import pyarrow as pa
+
+    @dlt.resource(name="typed", write_disposition="replace")
+    def typed():
+        yield [
+            {
+                "i": 1,
+                "f": 1.5,
+                "b": True,
+                "s": "alpha",
+                "ts": datetime.datetime(2026, 7, 7, 12, 0, tzinfo=datetime.UTC),
+                "d": datetime.date(2026, 7, 7),
+                "maybe": 10,
+            },
+            {
+                "i": 2,
+                "f": 2.5,
+                "b": False,
+                "s": "beta",
+                "ts": datetime.datetime(2026, 1, 1, 0, 0, tzinfo=datetime.UTC),
+                "d": datetime.date(2026, 1, 1),
+                "maybe": None,
+            },
+        ]
+
+    pipe = dlt.pipeline(
+        pipeline_name="p_types",
+        destination=_dest("e2e_types", ["typed"], "replace"),
+        dataset_name="public",
+        pipelines_dir=str(tmp_path),
+    )
+    pipe.run(typed())
+
+    tbl = pipe.dataset().table("typed").arrow()
+    by = {f.name: f.type for f in tbl.schema}
+
+    assert pa.types.is_integer(by["i"])
+    assert pa.types.is_floating(by["f"])
+    assert pa.types.is_boolean(by["b"])
+    assert pa.types.is_string(by["s"]) or pa.types.is_large_string(by["s"])
+    assert pa.types.is_timestamp(by["ts"])
+    assert pa.types.is_date(by["d"]) or pa.types.is_timestamp(by["d"])
+    assert pa.types.is_integer(by["maybe"])  # nullable int column stays integer
+
+    df = pipe.dataset().table("typed").order_by("i").df()
+    assert list(df["i"]) == [1, 2]
+    assert list(df["b"]) == [True, False]
+    assert list(df["s"]) == ["alpha", "beta"]
+    assert df["maybe"].isna().sum() == 1  # the null survived
 
 
 def test_schema_evolution_preserves_data(backend, tmp_path):

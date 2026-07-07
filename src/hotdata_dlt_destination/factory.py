@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import typing as t
 
+from dlt.common.data_writers.escape import (
+    escape_postgres_identifier,
+    escape_postgres_literal,
+)
 from dlt.common.destination import Destination, DestinationCapabilitiesContext
 from dlt.common.normalizers.naming import NamingConvention
 
@@ -38,6 +42,9 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
         caps.supports_ddl_transactions = False
         caps.supported_merge_strategies = ["upsert", "insert-only"]
         caps.supported_replace_strategies = ["truncate-and-insert"]
+        caps.sqlglot_dialect = "postgres"
+        caps.escape_identifier = escape_postgres_identifier
+        caps.escape_literal = escape_postgres_literal
         return caps
 
     @classmethod

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+
+import pyarrow as pa
+from hotdata.arrow import ResultsApi as ArrowResultsApi
 from hotdata_framework.databases import ManagedDatabase
 from hotdata_framework.managed_client import ManagedDatabaseClient
 
@@ -65,6 +69,65 @@ class HotdataClient(ManagedDatabaseClient):
         except KeyError:
             return
         self._request_with_retry(lambda: runtime.delete_managed_database(db.id))
+
+    def execute_sql(self, sql: str, *, database: str) -> pa.Table:
+        """Run a SQL query scoped to ``database`` and return the result as Arrow.
+
+        The read/dataset interface goes through here. The base client has no
+        general query entrypoint of its own — only the private database-scoped
+        submit + Arrow fetch that :meth:`fetch_table` uses — so this mirrors that
+        dance for arbitrary SQL: resolve the managed database name to its id,
+        submit the query, poll until the result is ready, and fetch it as a
+        ``pyarrow.Table``. An empty table is returned when the query produces no
+        out-of-band result (e.g. a statement with no result set).
+        """
+
+        def operation() -> pa.Table:
+            db = self._runtime.resolve_managed_database(database)
+            self._pin_database_header(db.id)
+            result_id = self._query_database_scoped(sql, database_id=db.id)
+            if result_id is None:
+                return pa.table({})
+            return ArrowResultsApi(self._runtime.api).get_result_arrow(result_id)
+
+        return self._request_with_retry(operation)
+
+    def fetch_table(self, *, database: str, schema: str, table: str) -> pa.Table | None:
+        # The base implementation polls get_result / fetches Arrow, both of which
+        # are database-scoped and reject requests without the X-Database-Id header
+        # (see _pin_database_header). Pin it before delegating.
+        setter = self._database_header_setter()
+        if setter is not None:
+            with contextlib.suppress(KeyError):  # database not created yet -> nothing to pin
+                setter("X-Database-Id", self._runtime.resolve_managed_database(database).id)
+        return super().fetch_table(database=database, schema=schema, table=table)
+
+    def list_managed_tables(self, database: str, *, schema: str) -> list:
+        """List the managed tables in ``database``/``schema`` (used by ``has_dataset``)."""
+        runtime = self._runtime
+        return self._request_with_retry(
+            lambda: runtime.list_managed_tables(database, schema=schema)
+        )
+
+    def _database_header_setter(self):
+        """Return the api client's ``set_default_header`` callable, or ``None``.
+
+        ``None`` when the runtime has no HTTP api client (e.g. the in-memory test
+        backend), in which case header-pinning is a no-op.
+        """
+        return getattr(getattr(self._runtime, "api", None), "set_default_header", None)
+
+    def _pin_database_header(self, database_id: str) -> None:
+        """Pin ``X-Database-Id`` on the api client.
+
+        Hosted's query **result** endpoints (get_result / get_result_arrow) are
+        scoped to a database and reject requests without this header, but the SDK
+        only sends it on the initial query submit. Pinning it as a default header
+        makes the follow-up result fetches carry it too.
+        """
+        setter = self._database_header_setter()
+        if setter is not None:
+            setter("X-Database-Id", database_id)
 
 
 __all__ = ["HotdataClient"]
