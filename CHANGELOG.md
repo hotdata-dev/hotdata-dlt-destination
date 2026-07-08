@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.6.1] - 2026-07-08
+
 ### Fixed
 
 - Default `loader_parallelism_strategy` is now `sequential` (was `table-sequential`). Managed-database loads lock at the catalog level, so parallel loads of *different* tables in the same database 409 each other — multi-table pipelines raced themselves and failed intermittently once the conflicts outlasted the retry budget. Override via `loader_parallelism_strategy` if concurrent table loads are ever wanted.
