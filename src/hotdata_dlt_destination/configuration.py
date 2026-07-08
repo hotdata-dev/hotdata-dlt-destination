@@ -41,8 +41,12 @@ class HotdataClientConfiguration(DestinationClientConfiguration):
     """Explicit list of table names for multi-table pipelines."""
     create_database_if_missing: bool = True
     """Create the managed database automatically if it does not exist."""
-    max_retries: int = 5
-    retry_backoff_seconds: float = 1.0
+    max_retries: int = 8
+    """Retry budget for transient API errors (409/429/5xx). Loads take a
+    catalog-level lock per database, so a concurrent writer can hold
+    409s for tens of seconds — the budget must outlast
+    that, not just blips. 8 attempts x 1.5s linear backoff ~= 42s."""
+    retry_backoff_seconds: float = 1.5
     max_table_nesting: int | None = None
     """Override the default maximum table nesting depth."""
     loader_parallelism_strategy: str | None = None

@@ -120,7 +120,7 @@ def test_fetch_table_rows_reads_synced_table() -> None:
         def __init__(self, api):
             pass
 
-        def get_result(self, result_id):
+        def get_result(self, result_id, *, x_database_id=None):
             assert result_id == "result_1"
             return SimpleNamespace(status="ready", result_id=result_id, error_message=None)
 
@@ -128,8 +128,11 @@ def test_fetch_table_rows_reads_synced_table() -> None:
         def __init__(self, api):
             pass
 
-        def get_result_arrow(self, result_id):
+        # Required in the hotdata 0.6.0 SDK; framework >=0.6.1 passes it on
+        # every result read.
+        def get_result_arrow(self, result_id, *, x_database_id):
             assert result_id == "result_1"
+            assert x_database_id == "db_1"
             return pa.table({"id": [1], "name": ["alpha"]})
 
     class FakeRuntime:
@@ -170,24 +173,19 @@ def test_fetch_table_rows_reads_synced_table() -> None:
     client.close()
 
 
-class _RecorderApi:
-    """Fake HTTP api client that records default headers set on it."""
-
-    def __init__(self) -> None:
-        self.headers: dict[str, str] = {}
-
-    def set_default_header(self, key: str, value: str) -> None:
-        self.headers[key] = value
-
-
-def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool) -> None:
+def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool) -> dict:
     """Patch the query/result APIs so no real HTTP happens.
 
     ``fetch_table`` resolves ArrowResultsApi from hotdata_framework.managed_client;
     ``execute_sql`` resolves it from hotdata_dlt_destination.hotdata_client.
+    Returns a recorder of the ``x_database_id`` scopes each read carried —
+    the hotdata 0.6.0 SDK requires the scope on ``get_result_arrow``, and
+    framework >=0.6.1 / ``execute_sql`` must pass it on every result read.
     """
     import pyarrow as pa  # noqa: F401  (arrow_table already built by caller)
     from hotdata.models.query_response import QueryResponse as _QR
+
+    scopes: dict[str, list] = {"result": [], "arrow": []}
 
     class FakeQueryApi:
         def __init__(self, api):
@@ -210,14 +208,16 @@ def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool
         def __init__(self, api):
             pass
 
-        def get_result(self, result_id):
+        def get_result(self, result_id, *, x_database_id=None):
+            scopes["result"].append(x_database_id)
             return SimpleNamespace(status="ready", result_id=result_id, error_message=None)
 
     class FakeArrowResultsApi:
         def __init__(self, api):
             pass
 
-        def get_result_arrow(self, result_id):
+        def get_result_arrow(self, result_id, *, x_database_id):
+            scopes["arrow"].append(x_database_id)
             return arrow_table
 
     monkeypatch.setattr("hotdata_framework.managed_client.QueryApi", FakeQueryApi)
@@ -227,6 +227,7 @@ def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool
         monkeypatch.setattr(
             "hotdata_dlt_destination.hotdata_client.ArrowResultsApi", FakeArrowResultsApi
         )
+    return scopes
 
 
 def _client_with_runtime(runtime) -> HotdataClient:
@@ -241,16 +242,16 @@ def _client_with_runtime(runtime) -> HotdataClient:
     return client
 
 
-def test_fetch_table_pins_database_id_header(monkeypatch) -> None:
-    # Hosted result endpoints reject requests without X-Database-Id; fetch_table
-    # (merge / state-sync read-back) must pin it before the base polls get_result.
+def test_fetch_table_carries_database_scope(monkeypatch) -> None:
+    # Hosted result endpoints reject requests without the database scope;
+    # fetch_table (merge / state-sync read-back) must carry it on the result
+    # poll and the Arrow fetch (native x_database_id since framework 0.6.1).
     import pyarrow as pa
 
-    _patch_query_apis(monkeypatch, pa.table({"id": [1]}), arrow_in_hotdata_client=False)
+    scopes = _patch_query_apis(monkeypatch, pa.table({"id": [1]}), arrow_in_hotdata_client=False)
 
     class FakeRuntime:
-        def __init__(self):
-            self.api = _RecorderApi()
+        api = None
 
         def list_managed_tables(self, database, *, schema):
             return [SimpleNamespace(table="orders", synced=True)]
@@ -264,19 +265,19 @@ def test_fetch_table_pins_database_id_header(monkeypatch) -> None:
     client = _client_with_runtime(FakeRuntime())
     table = client.fetch_table(database="dlt", schema="public", table="orders")
     assert table is not None and table.num_rows == 1
-    assert client._runtime.api.headers.get("X-Database-Id") == "db_42"
+    assert scopes["result"] == ["db_42"]
+    assert scopes["arrow"] == ["db_42"]
     client.close()
 
 
-def test_execute_sql_pins_database_id_header(monkeypatch) -> None:
-    # The read/dataset path pins the header too.
+def test_execute_sql_carries_database_scope(monkeypatch) -> None:
+    # The read/dataset path carries the scope too.
     import pyarrow as pa
 
-    _patch_query_apis(monkeypatch, pa.table({"id": [1, 2]}), arrow_in_hotdata_client=True)
+    scopes = _patch_query_apis(monkeypatch, pa.table({"id": [1, 2]}), arrow_in_hotdata_client=True)
 
     class FakeRuntime:
-        def __init__(self):
-            self.api = _RecorderApi()
+        api = None
 
         def resolve_managed_database(self, name):
             return SimpleNamespace(id="db_99")
@@ -287,7 +288,8 @@ def test_execute_sql_pins_database_id_header(monkeypatch) -> None:
     client = _client_with_runtime(FakeRuntime())
     table = client.execute_sql('SELECT * FROM "default"."public"."spans"', database="dlt")
     assert table.num_rows == 2
-    assert client._runtime.api.headers.get("X-Database-Id") == "db_99"
+    assert scopes["result"] == ["db_99"]
+    assert scopes["arrow"] == ["db_99"]
     client.close()
 
 

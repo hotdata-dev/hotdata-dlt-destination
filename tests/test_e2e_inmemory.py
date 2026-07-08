@@ -154,7 +154,7 @@ class _FakeResultsApi:
     def __init__(self, api):
         pass
 
-    def get_result(self, result_id):
+    def get_result(self, result_id, *, x_database_id=None):
         return SimpleNamespace(status="ready", result_id=result_id, error_message=None)
 
 
@@ -162,8 +162,13 @@ class _FakeArrowResultsApi:
     def __init__(self, api):
         pass
 
-    def get_result_arrow(self, result_id):
-        return _ACTIVE["backend"].results[result_id]
+    # x_database_id is required in the hotdata 0.6.0 SDK (results of
+    # database-scoped queries are database-scoped); framework >=0.6.1 and
+    # execute_sql pass it on every result read.
+    def get_result_arrow(self, result_id, *, x_database_id):
+        be = _ACTIVE["backend"]
+        assert x_database_id in be.id_to_name, x_database_id
+        return be.results[result_id]
 
 
 class _E2EClient(RealHotdataClient):
