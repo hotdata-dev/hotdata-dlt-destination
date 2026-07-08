@@ -33,7 +33,14 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
         caps.supported_loader_file_formats = ["parquet"]
         caps.preferred_staging_file_format = None
         caps.supported_staging_file_formats = []
-        caps.loader_parallelism_strategy = "table-sequential"
+        # "sequential", not "table-sequential": the managed-database load API
+        # locks at the CATALOG level, so two tables of the same database
+        # loading in parallel 409 each other. table-sequential only serializes
+        # jobs per table and still runs different tables concurrently — any
+        # multi-table pipeline then races itself and fails once the 409s
+        # outlast the retry budget. Override via
+        # config.loader_parallelism_strategy if that trade-off is ever wanted.
+        caps.loader_parallelism_strategy = "sequential"
         caps.max_table_nesting = 1000
         caps.naming_convention = "snake_case"
         caps.has_case_sensitive_identifiers = False

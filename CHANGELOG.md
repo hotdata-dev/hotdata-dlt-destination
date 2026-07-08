@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Default `loader_parallelism_strategy` is now `sequential` (was `table-sequential`). Managed-database loads lock at the catalog level, so parallel loads of *different* tables in the same database 409 each other — multi-table pipelines raced themselves and failed intermittently once the conflicts outlasted the retry budget. Override via `loader_parallelism_strategy` if concurrent table loads are ever wanted.
+- Transient-retry defaults raised from 5 attempts x 1.0s to 8 attempts x 1.5s linear backoff (~42s budget) so a concurrent writer holding the catalog lock is outlasted instead of surfacing as `409: Conflict`.
+
+### Changed
+
+- Dependencies raised to `hotdata-framework>=0.6.1,<0.7` and `hotdata>=0.6.0,<0.7`: the framework carries the `X-Database-Id` scope on every result read (fixes repeat loads into an existing database failing with an opaque `400: Bad Request`) and preserves API error bodies; the 0.6.0 SDK exposes — and on `get_result_arrow` requires — the scope natively.
+- `execute_sql` passes `x_database_id` natively on the Arrow fetch; the `X-Database-Id` default-header pinning (and the `fetch_table` pinning override) is removed — the framework now scopes every result read itself.
 
 ## [0.6.0] - 2026-06-30
 

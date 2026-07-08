@@ -13,8 +13,8 @@ dependencies = [
     # the minor. The SDKs move fast too (QueryResult / query-path surface), so
     # cap those to the current minor as well. See docs/sql-client-spec.md §11.
     "dlt>=1.28.1,<1.29",
-    "hotdata>=0.5.0,<0.6",
-    "hotdata-framework>=0.6.0,<0.7",
+    "hotdata>=0.6.0,<0.7",
+    "hotdata-framework>=0.6.1,<0.7",
     "pandas>=2.0",
     "pyarrow>=14",
 ]
