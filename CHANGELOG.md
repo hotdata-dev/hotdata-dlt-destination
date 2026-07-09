@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A non-snake_case `database_name` (e.g. `my-hyphen-db`) no longer splits a pipeline's writes across two databases. Load jobs snake_cased the name when addressing the API — with `create_database_if_missing` that minted a twin database (`my_hyphen_db`) and loaded all data there — while schema/state/bookkeeping writes addressed the original verbatim, so reads against it failed with "declared but has no data". `database_name` and `schema` are opaque API addresses (a managed-database name or a `dbid...` id), not SQL identifiers, and now pass through verbatim on every path. Callers addressing by id were never affected.
+
 
 ## [0.7.0] - 2026-07-09
 
