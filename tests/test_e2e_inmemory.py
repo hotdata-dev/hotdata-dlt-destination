@@ -344,6 +344,29 @@ def test_dataset_row_counts(backend, tmp_path):
     assert row["spans"] == 3
 
 
+def test_ibis_expression_reads(backend, tmp_path):
+    # ibis expressions compile to SQL (postgres dialect) and run through the
+    # sql_client — no live ibis backend needed, no destination-side code.
+    pytest.importorskip("ibis")
+    pipe = _spans_pipeline(tmp_path)
+    ds = pipe.dataset()
+    t = ds.table("spans").to_ibis()
+    expr = t.group_by("model").aggregate(avg_latency_ms=t.latency_ms.mean()).order_by("model")
+    by = {r.model: r.avg_latency_ms for r in ds(expr).df().itertuples()}
+    assert by["claude-sonnet-5"] == 240
+    assert by["claude-opus-4-8"] == (812 + 590) / 2
+
+
+def test_ibis_live_backend_unsupported(backend, tmp_path):
+    # The live ibis backend (dataset().ibis()) hard-dispatches per destination in
+    # dlt and needs a wire connection / local files — Hotdata's remote engine has
+    # neither, so dlt raises. Encodes the boundary so a future change is deliberate.
+    pytest.importorskip("ibis")
+    pipe = _spans_pipeline(tmp_path)
+    with pytest.raises(NotImplementedError):
+        pipe.dataset().ibis()
+
+
 def test_has_dataset_true_after_load(backend, tmp_path):
     pipe = _spans_pipeline(tmp_path)
     with pipe.dataset().sql_client as client:
