@@ -460,3 +460,28 @@ def test_schema_evolution_preserves_data(backend, tmp_path):
     assert orders_after is not None and len(orders_after) == 1 and orders_after[0]["id"] == 1
     assert backend.rows("e2e_evo", "customers") is not None
     assert backend.rows("e2e_evo", "_dlt_pipeline_state") is not None
+
+
+def test_hyphenated_database_name_stays_one_database(backend, tmp_path):
+    # database_name is an opaque API address (a name or a dbid), not a SQL
+    # identifier. The load jobs used to snake_case it while schema/state/
+    # bookkeeping writes used it verbatim, so a hyphenated name minted a twin
+    # database that silently received all the data — reads against the real DB
+    # then failed with "declared but has no data" (regression, 2026-07-09).
+    @dlt.resource(name="rows", write_disposition="replace")
+    def rows():
+        yield [{"n": 1}, {"n": 2}]
+
+    pipe = dlt.pipeline(
+        pipeline_name="p_hyphen",
+        destination=_dest("e2e-hyphen-db", ["rows"], "replace"),
+        dataset_name="public",
+        pipelines_dir=str(tmp_path),
+    )
+    pipe.run(rows())
+
+    # Exactly one database, under the exact name the caller addressed.
+    assert set(backend.name_to_id) == {"e2e-hyphen-db"}
+    # And the data is readable back through that same address.
+    df = pipe.dataset().table("rows").df()
+    assert sorted(df["n"].tolist()) == [1, 2]

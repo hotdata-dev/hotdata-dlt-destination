@@ -46,3 +46,18 @@ def test_declared_table_names_normalizes_identifiers() -> None:
         table_names=["LineItems", "Customers"],
     )
     assert names == ["customers", "lineitems"]
+
+
+def test_table_contract_keeps_database_and_schema_verbatim() -> None:
+    # database_name/schema are opaque API addresses (a name or a dbid), not SQL
+    # identifiers. Rewriting them split one pipeline's writes across two
+    # databases: the load jobs (which address via the contract) minted a
+    # snake_cased twin, while schema/state/bookkeeping writes (which address via
+    # the raw config) stayed on the original (regression, 2026-07-09).
+    contract = TableContract.from_table_schema(
+        {"name": "spans"},
+        database_name="my-hyphen-db",
+        schema="Public-Schema",
+    )
+    assert contract.database_name == "my-hyphen-db"
+    assert contract.schema == "Public-Schema"

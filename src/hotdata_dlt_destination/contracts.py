@@ -38,9 +38,17 @@ class TableContract:
         # dlt has already applied the naming convention, so ``name`` is the fully
         # composed table name (e.g. ``orders__items`` for a nested table). Do NOT
         # re-prepend ``parent`` -- that double-prefixes child tables.
+        #
+        # ``database_name`` and ``schema`` are opaque API addresses (a managed-DB
+        # name or a ``dbid...`` id), not SQL identifiers — they must pass through
+        # VERBATIM. Every other write-path call (``initialize_storage``,
+        # ``update_stored_schema``, ``complete_load``) addresses the API with the
+        # raw config values; rewriting them here made a load job with a
+        # hyphenated database name mint a snake_cased twin database and load the
+        # data there, leaving the declared tables in the original DB empty.
         return cls(
-            database_name=normalize_identifier(database_name),
-            schema=normalize_identifier(schema),
+            database_name=database_name,
+            schema=schema,
             table_name=normalize_identifier(table["name"]),
         )
 
