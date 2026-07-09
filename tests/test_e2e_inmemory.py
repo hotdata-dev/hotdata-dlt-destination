@@ -222,6 +222,31 @@ def test_load_replace_and_bookkeeping(backend, tmp_path):
     assert backend.rows("e2e_basic", "_dlt_version") is not None
 
 
+def test_load_decimal_column(backend, tmp_path):
+    # Regression: capabilities left decimal_precision unset, so normalizing a
+    # Decimal column without explicit precision hints crashed to parquet
+    # (get_py_arrow_numeric: "'NoneType' object is not subscriptable"). The value
+    # must load and round-trip using the destination's default numeric precision.
+    from decimal import Decimal
+
+    @dlt.resource(name="inventory", write_disposition="replace")
+    def inventory():
+        yield [{"id": 1, "price": Decimal("1.50")}, {"id": 2, "price": Decimal("2.50")}]
+
+    dlt.pipeline(
+        pipeline_name="p_decimal",
+        destination=_dest("e2e_decimal", ["inventory"]),
+        dataset_name="public",
+        pipelines_dir=str(tmp_path),
+    ).run(inventory())
+
+    rows = backend.rows("e2e_decimal", "inventory")
+    assert rows is not None
+    by_id = {r["id"]: r["price"] for r in rows}
+    assert by_id[1] == Decimal("1.50")
+    assert by_id[2] == Decimal("2.50")
+
+
 def test_nested_child_tables(backend, tmp_path):
     @dlt.resource(name="orders", write_disposition="replace")
     def orders():

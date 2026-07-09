@@ -15,6 +15,14 @@ def test_capabilities_use_parquet_and_nesting() -> None:
     assert caps.supported_replace_strategies == ["truncate-and-insert"]
 
 
+def test_capabilities_set_numeric_precision() -> None:
+    # Without these, dlt's normalize crashes mapping a Decimal/wei column to parquet
+    # (get_py_arrow_numeric indexes None). (38, 9) / (78, 0) are dlt's defaults.
+    caps = hotdata().capabilities()
+    assert caps.decimal_precision == (38, 9)
+    assert caps.wei_precision == (78, 0)
+
+
 def test_loader_parallelism_strategy_override() -> None:
     caps = hotdata(loader_parallelism_strategy="table-sequential").capabilities()
     assert caps.loader_parallelism_strategy == "table-sequential"
