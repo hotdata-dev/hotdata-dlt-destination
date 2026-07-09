@@ -299,6 +299,28 @@ caps.escape_literal    = escape_postgres_literal
   explicitly (we mirror `dlt.destinations.impl.postgres`). The write path never needed them, which is why
   they were absent before this work.
 
+### Three front-ends, one execution path
+
+Raw SQL, dlt's fluent API, and ibis expressions are three ways to *author* a read; all compile (via
+sqlglot, `postgres` dialect) to the **same** SQL against `"default"."public".<table>` and execute
+through the **same** `execute_query`. The same query, three ways, compiles to:
+
+```sql
+-- raw:    ds("SELECT span_id, model, latency_ms FROM spans WHERE ok ORDER BY latency_ms LIMIT 2")
+-- fluent: ds.table("spans").select(...).where("ok").order_by("latency_ms").limit(2)
+-- ibis:   t.filter(t.ok).select(...).order_by("latency_ms").limit(2)
+SELECT "…"."span_id", "…"."model", "…"."latency_ms"
+FROM "default"."public"."spans"
+WHERE "…"."ok" ORDER BY "latency_ms" [ASC] LIMIT 2
+```
+
+Differences across the three are cosmetic only: the table alias (`"spans"` vs ibis's positional `"t0"`),
+explicit `ASC`, and ibis layering an aggregate into a subquery (`SELECT … FROM (SELECT … GROUP BY …)
+ORDER BY …`) — all semantically identical, all optimized away by DataFusion. ibis also reaches past the
+fluent API (e.g. `group_by`/`aggregate`, which dlt's fluent surface doesn't expose). The only ibis mode
+that does **not** route through this path is the live backend (`dataset().ibis()`, §16) — it bypasses
+the sql_client to connect to the engine directly, which is exactly why it can't work for a REST engine.
+
 ## 11. Version linking (why this package pins both dlt *and* the Hotdata SDK)
 
 This adapter sits **between two independently-versioned dependencies and depends on the unstable
@@ -386,7 +408,8 @@ stored Arrow tables, then assert full round trips:
 | `.limit()/.head()/.select()/.where()/.order_by()` | sqlglot → `postgres` → `execute_query` | offline + live |
 | `dataset.row_counts()`, `dataset.tables()` | aggregate/catalog paths | offline |
 | `has_dataset()` | override | unit |
-| ibis over the client | `sql_client` + dialect | live (M3) |
+| ibis **expressions** (`.table("t").to_ibis()` → compile → SQL) | sqlglot(postgres) → `execute_query` | offline + live |
+| ibis **live backend** (`dataset().ibis()`) | raises `NotImplementedError` | offline (boundary test) |
 
 ### 13d. Live e2e / manual — the round-trip demo, against **local runtimedb**
 This is the "actually running it" test, and the **primary integration target** — the real DataFusion
@@ -468,8 +491,10 @@ print(tbl.schema)
 |---|---|---|
 | **M1** | `HotdataSqlClient` + `HotdataCursor` + `WithSqlClient` wiring | `dataset().table("t").df()` returns loaded rows against the in-memory backend |
 | **M2** | `sqlglot_dialect="postgres"` + fluent queries | `.where()/.limit()/.order_by()`/aggregates run live on DataFusion; failures triaged |
-| **M3** | ibis over the client | Hotdata's ibis backend reads through the sql_client end-to-end |
+| **M3** | ibis support | ibis **expressions** (`.to_ibis()` → compile → SQL) run through the sql_client — **works with no extra code** (rides the postgres dialect + `execute_query`). The live ibis **backend** (`dataset().ibis()`) is **not supported** and can't be from this package (see below) |
 | **M4** | Docs + capability matrix + version caps + CI canary | README matrix shows read ✅, transactions ❌; `roundtrip_demo.py` runs green live |
+
+**Why the live ibis backend can't be supported here.** dlt's `create_ibis_backend` (`dlt/helpers/ibis.py`) is a closed `issubclass(destination.spec, …)` dispatch; unknown destinations hit `else: raise NotImplementedError`. Every supported destination uses one of two models: a **direct wire connection** to the engine (`ibis.postgres.connect`, `ibis.snowflake.connect`, …) or an **embedded DuckDB over local files** (`ibis.duckdb.from_connection`, as lance / lancedb / filesystem / motherduck do). Hotdata fits neither — the engine is remote DataFusion behind REST, and its DuckLake parquet isn't local files our client can scan (which is also why we deliberately don't embed DuckDB, §3). Supporting it would require an upstream dlt branch **plus** a real ibis connection to Hotdata — realistically a runtimedb-side Postgres-wire endpoint or direct DuckLake catalog/storage access (which would bypass the API/auth). Out of scope; runtimedb roadmap.
 
 ## 17. Open questions
 
