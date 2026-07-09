@@ -7,21 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.7.0] - 2026-07-09
+
 ### Added
 
-- Dataset read interface: the destination now implements dlt's SQL-client contract (`WithSqlClient`), so data loaded with dlt can be queried through the pipeline itself — the same read API as the `duckdb`/`postgres`/`bigquery` destinations. Queries run server-side on DataFusion (Postgres-compatible SQL) and return as Arrow/pandas.
+- Dataset read interface — data loaded with dlt can now be queried through the pipeline itself, the same read API as the `duckdb`/`postgres`/`bigquery` destinations. Queries run server-side on DataFusion (Postgres-compatible SQL) and return as Arrow/pandas. The client shipped in 0.6.1; these are its first release notes.
   - `pipeline.dataset().table("t").df()` / `.arrow()` / `.fetchall()`, raw SQL via `pipeline.dataset()("SELECT ...")`, and the fluent API (`select`/`where`/`order_by`/`limit`, aggregates, `row_counts()`).
   - New `HotdataSqlClient` + `HotdataCursor` over `pyarrow.Table` (`sql_client.py`); `sqlglot_dialect="postgres"` with identifier/literal escaping (`factory.py`); `HotdataClient.execute_sql`.
   - ibis expressions via `pipeline.dataset().table("t").to_ibis()` (built as ibis, compiled to SQL, executed through the sql_client). The live ibis backend (`dataset().ibis()`) is not supported — dlt maps it to a direct per-destination engine connection, which Hotdata's remote engine does not expose.
-
-### Fixed
-
-- Query result endpoints are scoped to a database: the `X-Database-Id` header is now pinned on result fetches (`get_result` / `get_result_arrow`), which the SDK previously sent only on query submit. Without it the hosted API rejects the fetch (`400 "X-Database-Id header is required"`). This unblocks reads and also repairs `merge`/`upsert` writes and cross-run pipeline-state sync against hosted Hotdata, which read existing rows back via `fetch_table` and hit the same endpoints.
-- Undefined-relation errors (querying a missing table) now map to dlt's `DatabaseUndefinedRelation` instead of a generic terminal error. `classify_sdk_error` collapses the message to `"400: Bad Request"`, so `_make_database_exception` scans the exception cause chain for the engine's `"... not found"`.
+  - Querying a missing table raises dlt's `DatabaseUndefinedRelation` rather than a generic terminal error, so callers can tell "relation doesn't exist" from a real failure. `_make_database_exception` finds the engine's `"... not found"` even when it's nested under a generic `"400: Bad Request"` in the error's cause chain.
 
 ### Changed
 
-- Cap dependency minors, since the read path subclasses dlt internals (`SqlClientBase`, `DBApiCursorImpl`, `WithSqlClient`) and calls internal SDK query surface: `dlt>=1.28.1,<1.29` (was `>=1.28.1`), `hotdata>=0.5.0,<0.6` (was `>=0.5.0`), `hotdata-framework>=0.6.0,<0.7` (was `>=0.6.0`).
+- Cap `dlt>=1.28.1,<1.29` (was `>=1.28.1`): the read interface subclasses dlt internals (`SqlClientBase`, `DBApiCursorImpl`, `WithSqlClient`), which shift between dlt minor releases. (The `hotdata`/`hotdata-framework` caps were raised separately in 0.6.1.)
 
 ## [0.6.1] - 2026-07-08
 
