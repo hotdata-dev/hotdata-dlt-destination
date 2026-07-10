@@ -39,6 +39,7 @@ class InMemoryBackend:
         self.name_to_id: dict[str, str] = {}
         self.id_to_name: dict[str, str] = {}
         self.declared: dict[str, set[str]] = {}
+        self.keys: dict[tuple, list[str]] = {}
         self.tables: dict[tuple, pa.Table] = {}
         self.uploads: dict[str, pa.Table] = {}
         self.results: dict[str, pa.Table] = {}
@@ -60,12 +61,14 @@ class InMemoryBackend:
             for t in sorted(self.declared.get(name, set()))
         ]
 
-    def create_managed_database(self, *, description, schema, tables, expires_at=None):
+    def create_managed_database(self, *, description, schema, tables, keys=None, expires_at=None):
         self._n += 1
         db_id = f"db_{self._n}"
         self.name_to_id[description] = db_id
         self.id_to_name[db_id] = description
         self.declared[description] = set(tables)
+        for t in tables:
+            self.keys[(description, schema, t)] = list((keys or {}).get(t, []))
         return SimpleNamespace(id=db_id, default_connection_id="conn")
 
     def delete_managed_database(self, name_or_id):
@@ -76,9 +79,10 @@ class InMemoryBackend:
         for key in [k for k in self.tables if k[0] == name]:
             del self.tables[key]
 
-    def add_managed_table(self, database, table, *, schema):
+    def add_managed_table(self, database, table, *, schema, key=None):
         name = self.id_to_name.get(database, database)
         self.declared.setdefault(name, set()).add(table)
+        self.keys[(name, schema, table)] = list(key or [])
         return SimpleNamespace(table=table, var_schema=schema, synced=False)
 
     def upload_parquet(self, path):
@@ -87,9 +91,50 @@ class InMemoryBackend:
         self.uploads[uid] = pq.read_table(path)
         return uid
 
-    def load_managed_table(self, database, table, *, schema, upload_id):
+    def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
+        import pyarrow as _pa
+
         name = self.id_to_name.get(database, database)
-        self.tables[(name, schema, table)] = self.uploads[upload_id]
+        k = (name, schema, table)
+        incoming = self.uploads[upload_id]
+        existing = self.tables.get(k)
+
+        if mode == "replace" or existing is None:
+            result = incoming
+        elif mode == "append":
+            result = _pa.concat_tables([existing, incoming], promote_options="permissive")
+        else:
+            # key-based modes: match rows by the table's declared key.
+            key_cols = self.keys.get(k, [])
+            ex_rows, inc_rows = existing.to_pylist(), incoming.to_pylist()
+
+            def _kt(row: dict) -> tuple:
+                return tuple(row.get(c) for c in key_cols)
+
+            if mode == "delete":
+                drop = {_kt(r) for r in inc_rows}
+                kept = [r for r in ex_rows if _kt(r) not in drop]
+                result = (
+                    _pa.Table.from_pylist(kept, schema=existing.schema)
+                    if kept
+                    else existing.schema.empty_table()
+                )
+            else:  # update (ignore unmatched) / upsert (also insert unmatched)
+                index = {_kt(r): i for i, r in enumerate(ex_rows)}
+                merged = list(ex_rows)
+                for r in inc_rows:
+                    kt = _kt(r)
+                    if kt in index:
+                        merged[index[kt]] = r
+                    elif mode == "upsert":
+                        index[kt] = len(merged)
+                        merged.append(r)
+                unified = _pa.unify_schemas(
+                    [existing.schema, incoming.schema], promote_options="permissive"
+                )
+                result = _pa.Table.from_pylist(merged, schema=unified)
+
+        self.tables[k] = result
         return SimpleNamespace(full_name=f"{name}.{schema}.{table}")
 
     def execute_sql(self, database, sql):

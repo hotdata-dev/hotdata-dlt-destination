@@ -70,6 +70,25 @@ def _declared_tables(*, contract: TableContract, declared_tables: list[str] | No
     return sorted({*normalized, contract.table_name, *_INTERNAL_TABLE_NAMES})
 
 
+def _table_keys(*, schema: Schema, database_name: str, schema_name: str) -> dict[str, list[str]]:
+    """Managed-table-name -> declared key columns, from each dlt table's
+    ``primary_key`` hint. Declaring a key enables the key-based load modes
+    (delete/update/upsert) on that table; tables without one stay
+    replace/append-only."""
+    keys: dict[str, list[str]] = {}
+    for name, table_schema in schema.tables.items():
+        if _is_internal_table(name):
+            continue
+        primary_key = resolve_primary_key(table_schema)
+        if not primary_key:
+            continue
+        managed = TableContract.from_table_schema(
+            table_schema, database_name=database_name, schema=schema_name
+        ).table_name
+        keys[managed] = primary_key
+    return keys
+
+
 @contextmanager
 def _hotdata_api(config: HotdataClientConfiguration) -> Iterator[HotdataClient]:
     api = HotdataClient(
@@ -150,11 +169,27 @@ class HotdataLoadJob(RunnableLoadJob):
                         contract=contract,
                         declared_tables=list(self._config.declared_tables or []),
                     ),
+                    keys={contract.table_name: primary_key} if primary_key else None,
                     create_if_missing=self._config.create_database_if_missing,
                 )
 
-                table_to_load = batch_table
-                if disposition != "replace":
+                # Native fast paths — upload the incoming batch and let the
+                # server apply the load mode, with no full-table
+                # read-modify-write:
+                #   append / replace  -> the mode of the same name
+                #   merge / upsert     -> upsert (update matched keys, insert the
+                #                         rest), when a primary key is declared
+                # insert-only, or a merge with no resolvable primary key, still
+                # combines client-side and replaces: the _dlt_id fallback can't
+                # match a logical row across runs, so it stays off the native
+                # key path.
+                if disposition in ("append", "replace"):
+                    table_to_load = batch_table
+                    load_mode = disposition
+                elif disposition in ("merge", "upsert") and primary_key:
+                    table_to_load = batch_table
+                    load_mode = "upsert"
+                else:
                     existing = api.fetch_table(
                         database=contract.database_name,
                         schema=contract.schema,
@@ -167,6 +202,7 @@ class HotdataLoadJob(RunnableLoadJob):
                         primary_key=primary_key,
                         fallback_key="_dlt_id",
                     )
+                    load_mode = "replace"
 
                 with _temp_parquet() as parquet_path:
                     write_table_parquet(table_to_load, parquet_path)
@@ -176,6 +212,7 @@ class HotdataLoadJob(RunnableLoadJob):
                         contract.table_name,
                         schema=contract.schema,
                         upload_id=upload_id,
+                        mode=load_mode,
                     )
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
@@ -243,6 +280,11 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                     self.config.database_name,
                     schema=self.config.schema,
                     tables=all_tables,
+                    keys=_table_keys(
+                        schema=self.schema,
+                        database_name=self.config.database_name,
+                        schema_name=self.config.schema,
+                    ),
                     create_if_missing=self.config.create_database_if_missing,
                 )
         except HotdataTerminalError as exc:

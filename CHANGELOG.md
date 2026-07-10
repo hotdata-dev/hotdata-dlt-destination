@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Loads now use the server's native load modes instead of a client-side read-modify-write:
+  - `append` / `replace` upload the batch directly (no full-table read + rewrite).
+  - `merge` (with a `primary_key`) maps to a native `upsert` — the server updates the matched keys and inserts the rest by key. The table's key is declared up front (`initialize_storage` / `add_managed_table`), so this needs the server + SDK support for declaring a key over HTTP.
+  - `insert-only`, and a `merge` with no resolvable primary key, still combine client-side and replace (the `_dlt_id` fallback can't match a logical row across runs). Requires the SDK's `load_managed_table(mode=)` / key-on-declare (see the dependency bump).
+
+### Fixed
+
+- `merge`/`upsert` now dedupe by the resource's `primary_key`. It was read from a top-level table key that dlt never sets (dlt encodes the primary key as per-column hints), so merges silently deduped by the row-unique `_dlt_id` and produced duplicates across runs instead of updating in place.
+- Read-modify-write combines no longer fail with `ArrowTypeError: string_view vs string`: the server's Arrow reads (Utf8View) are normalised to plain string/binary before combining with the incoming batch.
 
 ## [0.7.0] - 2026-07-09
 

@@ -25,8 +25,12 @@ class HotdataClient(ManagedDatabaseClient):
         *,
         schema: str,
         tables: list[str],
+        keys: dict[str, list[str]] | None = None,
         create_if_missing: bool,
     ) -> ManagedDatabase:
+        # ``keys`` maps a table name to its row-identity columns; a declared key
+        # enables the key-based load modes (delete/update/upsert) on that table.
+        keys = keys or {}
         runtime = self._runtime
 
         # Resolve is called directly (not via _request_with_retry) so its KeyError
@@ -38,7 +42,7 @@ class HotdataClient(ManagedDatabaseClient):
                 raise
             return self._request_with_retry(
                 lambda: runtime.create_managed_database(
-                    description=name, schema=schema, tables=sorted(set(tables))
+                    description=name, schema=schema, tables=sorted(set(tables)), keys=keys
                 )
             )
 
@@ -48,16 +52,20 @@ class HotdataClient(ManagedDatabaseClient):
                 lambda: runtime.list_managed_tables(name, schema=schema)
             )
         }
-        # Declare any newly-required tables additively, in place. dlt calls
-        # ``initialize_storage`` with the full table set before any load job runs,
-        # so by load time this is normally a no-op.
+        # Declare any newly-required tables additively, in place, carrying their
+        # key. dlt calls ``initialize_storage`` with the full table set before any
+        # load job runs, so by load time this is normally a no-op.
         for table in sorted(set(tables) - existing):
-            self._add_managed_table(name, table, schema=schema)
+            self._add_managed_table(name, table, schema=schema, key=keys.get(table))
         return db
 
-    def _add_managed_table(self, name: str, table: str, *, schema: str) -> None:
+    def _add_managed_table(
+        self, name: str, table: str, *, schema: str, key: list[str] | None = None
+    ) -> None:
         runtime = self._runtime
-        self._request_with_retry(lambda: runtime.add_managed_table(name, table, schema=schema))
+        self._request_with_retry(
+            lambda: runtime.add_managed_table(name, table, schema=schema, key=key)
+        )
 
     def drop_managed_database(self, name: str) -> None:
         """Delete the managed database if it exists (used for dlt dev_mode / refresh)."""
