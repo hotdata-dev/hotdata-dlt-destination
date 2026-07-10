@@ -7,10 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MIT `LICENSE` file, `license`/`license-files` metadata in `pyproject.toml`, and a License section + badge in the README.
+
+### Changed
+
+- README reworked for open-source DX: badges, table of contents, a highlights summary, a requirements section, and `Development`/`Contributing` sections. Corrected the configuration table (retry defaults are `8` attempts / `1.5s`, not `5` / `1.0`) and documented the `api_base_url` and `loader_parallelism_strategy` options.
+- Added `[project.urls]` (Homepage, Repository, Changelog, Issues) so the PyPI page links back to the project.
+
 ### Fixed
 
 - Loading a `Decimal` (or wei) column without explicit precision hints no longer crashes. The destination's capabilities left `decimal_precision`/`wei_precision` unset, so dlt's normalize step raised `TypeError: 'NoneType' object is not subscriptable` in `get_py_arrow_numeric` while mapping the column to parquet. Capabilities now declare dlt's default numeric precision `(38, 9)` and wei precision `(78, 0)`, matching the Postgres numeric surface DataFusion presents.
-
 
 ## [0.7.1] - 2026-07-09
 
