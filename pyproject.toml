@@ -3,6 +3,8 @@ name = "hotdata-dlt-destination"
 version = "0.7.1"
 description = "dlt destination for loading data into Hotdata managed databases."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { email = "669988+eddietejeda@users.noreply.github.com" }
 ]
@@ -18,6 +20,12 @@ dependencies = [
     "pandas>=2.0",
     "pyarrow>=14",
 ]
+
+[project.urls]
+Homepage = "https://hotdata.dev"
+Repository = "https://github.com/hotdata-dev/hotdata-dlt-destination"
+Changelog = "https://github.com/hotdata-dev/hotdata-dlt-destination/blob/main/CHANGELOG.md"
+Issues = "https://github.com/hotdata-dev/hotdata-dlt-destination/issues"
 
 [project.scripts]
 hotdata-dlt-destination = "hotdata_dlt_destination.cli:main"

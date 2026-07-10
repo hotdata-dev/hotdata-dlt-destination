@@ -1,13 +1,52 @@
 # hotdata-dlt-destination
 
-Load data into [Hotdata](https://hotdata.dev) managed databases using [dlt](https://dlthub.com).
+[![PyPI version](https://img.shields.io/pypi/v/hotdata-dlt-destination.svg)](https://pypi.org/project/hotdata-dlt-destination/)
+[![Python versions](https://img.shields.io/pypi/pyversions/hotdata-dlt-destination.svg)](https://pypi.org/project/hotdata-dlt-destination/)
+[![CI](https://github.com/hotdata-dev/hotdata-dlt-destination/actions/workflows/ci.yml/badge.svg)](https://github.com/hotdata-dev/hotdata-dlt-destination/actions/workflows/ci.yml)
+[![dlt](https://img.shields.io/badge/dlt-1.28-blue.svg)](https://dlthub.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dlt handles extraction, schema inference, and batching. This package handles the Hotdata side — uploading each batch as Parquet and registering it with your managed database.
+Load data into [Hotdata](https://hotdata.dev) managed databases using [dlt](https://dlthub.com) — then read it back through the same pipeline.
+
+dlt handles extraction, schema inference, and batching. This package is a **native dlt destination** (`JobClientBase` + `WithStateSync` + `WithSqlClient`) for the Hotdata side: it uploads each batch as Parquet, registers it with your managed database, syncs pipeline state so incremental sources resume, and exposes a server-side read API.
+
+**Highlights**
+
+- **Native destination** — nested/child tables, dlt internal columns (`_dlt_id`, `_dlt_load_id`), schema versioning, and load tracking, all preserved.
+- **Incremental resume** — pipeline state is persisted in the managed database, so incremental sources pick up where they left off across runs.
+- **Read your data back** — query loaded tables through `pipeline.dataset()` (pandas / Arrow / fluent SQL / ibis), server-side on Apache DataFusion. No Hotdata-specific code.
+- **In-place schema evolution** — new tables and columns are added to an existing database without recreating it or moving data.
+- **Append / replace / merge (upsert)** — standard dlt write dispositions, plus an `insert-only` combine.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [Read your data back](#read-your-data-back)
+- [Feature support](#feature-support)
+- [Configuration](#configuration)
+- [Write modes](#write-modes)
+- [Multiple tables](#multiple-tables)
+- [Verify a load](#verify-a-load)
+- [Demo pipeline](#demo-pipeline)
+- [How it works](#how-it-works)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+- [Resources](#resources)
+
+## Requirements
+
+- Python **3.11+**
+- A [Hotdata](https://hotdata.dev) workspace, an API key, and its workspace ID. Grab both from your Hotdata dashboard, or with the [Hotdata CLI](https://github.com/hotdata-dev/sdk-python).
 
 ## Install
 
 ```bash
 pip install hotdata-dlt-destination
+# or
+uv add hotdata-dlt-destination
 ```
 
 ## Quickstart
@@ -43,7 +82,7 @@ export HOTDATA_WORKSPACE=your_workspace_id
 
 That's it. On first run, the `sales` managed database is created automatically and the `orders` table is loaded.
 
-`hotdata` is a native dlt destination (`JobClientBase` + `WithStateSync`): it supports nested/child tables, preserves dlt's internal columns (`_dlt_id`, `_dlt_load_id`), and persists schema-version, load, and pipeline-state tables in the managed database so **incremental sources resume correctly across runs**. If an existing managed database is missing a declared table on a later run, the table is added to it in place; existing tables and their data are left untouched.
+`hotdata` supports nested/child tables, preserves dlt's internal columns (`_dlt_id`, `_dlt_load_id`), and persists schema-version, load, and pipeline-state tables in the managed database so **incremental sources resume correctly across runs**. If an existing managed database is missing a declared table on a later run, the table is added to it in place; existing tables and their data are left untouched.
 
 ## Read your data back
 
@@ -145,13 +184,17 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 | `workspace_id` | `HOTDATA_WORKSPACE` | required | Your Hotdata workspace ID |
 | `database_name` | `HOTDATA_DATABASE` | `dlt` | Managed database to load into |
 | `schema` | `HOTDATA_SCHEMA` | `public` | Schema within the managed database |
-| `write_disposition` | `HOTDATA_WRITE_DISPOSITION` | `append` | Default write mode (see below) |
-| `declared_tables` | `HOTDATA_DECLARED_TABLES` | — | All table names the pipeline will write (required for multi-table pipelines — see below) |
-| `create_database_if_missing` | — | `True` | Create the managed database if it doesn't exist yet |
-| `max_retries` | `HOTDATA_MAX_RETRIES` | `5` | How many times to retry a failed request |
-| `retry_backoff_seconds` | `HOTDATA_RETRY_BACKOFF_SECONDS` | `1.0` | Initial wait between retries (grows with each attempt) |
+| `write_disposition` | `HOTDATA_WRITE_DISPOSITION` | `append` | Default write mode (see [Write modes](#write-modes)) |
+| `declared_tables` | `HOTDATA_DECLARED_TABLES` | — | All table names the pipeline will write (required for multi-table pipelines — see [Multiple tables](#multiple-tables)) |
+| `create_database_if_missing` | `HOTDATA_CREATE_DATABASE_IF_MISSING` | `True` | Create the managed database if it doesn't exist yet |
+| `api_base_url` | `HOTDATA_API_BASE_URL` | `https://api.hotdata.dev` | Hotdata API endpoint |
+| `max_retries` | `HOTDATA_MAX_RETRIES` | `8` | How many times to retry a failed request |
+| `retry_backoff_seconds` | `HOTDATA_RETRY_BACKOFF_SECONDS` | `1.5` | Initial wait between retries (grows linearly with each attempt) |
 
-You can pass any of these as keyword arguments to `hotdata(...)`, or set the corresponding environment variable. `hotdata` also accepts `max_table_nesting` (default `1000`).
+You can pass any of these as keyword arguments to `hotdata(...)`, or set the corresponding environment variable. `hotdata` also accepts:
+
+- `max_table_nesting` (default `1000`) — maximum nested/child-table depth.
+- `loader_parallelism_strategy` (default `sequential`) — managed-database loads lock at the catalog level, so different tables in the same database can't load concurrently. Override only if you know your loads won't contend for the same database.
 
 ## Write modes
 
@@ -195,7 +238,7 @@ pipeline = dlt.pipeline(
 pipeline.run([customers_resource(), orders_resource(), products_resource()])
 ```
 
-If you add a new table later, include it in `declared_tables` on the next run.
+If you add a new table later, include it in `declared_tables` on the next run — it's added to the existing database in place.
 
 ## Verify a load
 
@@ -222,7 +265,7 @@ export HOTDATA_WORKSPACE=your_workspace_id
 uv run hotdata-dlt-demo
 ```
 
-This creates a `example_macro` database with two tables:
+This creates an `example_macro` database with two tables:
 
 - `macro_indicators_raw` — one row per `(date, series, value)`, all 9 series at their original frequency
 - `macro_wide` — one row per month from 1992 onward, each indicator as its own column
@@ -239,9 +282,44 @@ For `append`, `merge`, `upsert`, and `insert-only`, the destination reads the cu
 
 The destination preserves dlt's native `_dlt_id` / `_dlt_load_id` columns and persists dlt's schema-version, load, and pipeline-state tables in the managed database so incremental sources can restore their state on the next run. No extra columns are added.
 
+See [docs/architecture.md](docs/architecture.md) and the [runbook](docs/runbook.md) for the internals.
+
+## Development
+
+The project uses [uv](https://docs.astral.sh/uv/) for dependency management.
+
+```bash
+git clone https://github.com/hotdata-dev/hotdata-dlt-destination.git
+cd hotdata-dlt-destination
+
+uv sync                 # install deps (including dev group)
+
+uv run pytest           # run the test suite
+uv run ruff check       # lint
+uv run ruff format      # format
+uv run mypy             # strict type-check
+```
+
+The test suite runs entirely offline — end-to-end tests exercise real dlt pipelines through the destination against an in-memory backend, so no Hotdata credentials are needed.
+
+## Contributing
+
+Issues and pull requests are welcome. Please:
+
+- Open an issue to discuss substantial changes before starting.
+- Keep the suite green (`uv run pytest`) and the lint/type checks clean (`uv run ruff check`, `uv run mypy`).
+- Add a note to [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`.
+
+Release process is documented in [RELEASING.md](RELEASING.md).
+
+## License
+
+[MIT](LICENSE) © Hotdata Inc.
+
 ## Resources
 
 - [Hotdata Python SDK](https://github.com/hotdata-dev/sdk-python)
 - [hotdata-framework](https://github.com/hotdata-dev/sdk-python-framework)
 - [dlt documentation](https://dlthub.com/docs)
-- [Architecture and runbook](docs/runbook.md)
+- [Architecture](docs/architecture.md) · [Runbook](docs/runbook.md) · [SQL-client spec](docs/sql-client-spec.md)
+- [Changelog](CHANGELOG.md)
