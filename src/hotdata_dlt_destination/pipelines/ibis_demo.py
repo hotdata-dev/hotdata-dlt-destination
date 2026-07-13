@@ -1,0 +1,106 @@
+"""Live ibis backend demo for the Hotdata dlt destination.
+
+Loads a small self-contained dataset into a Hotdata managed database, then reads
+it back with ``pipeline.dataset().ibis()`` -- the live ``ibis.hotdata`` backend --
+and runs ibis expressions and raw SQL against the remote engine.
+
+Point ``HOTDATA_API_BASE_URL`` at a local cluster or the hosted API; the flow is
+otherwise identical.
+
+Environment:
+    HOTDATA_API_KEY       -- Hotdata API key
+    HOTDATA_WORKSPACE     -- Hotdata workspace ID
+    HOTDATA_API_BASE_URL  -- Hotdata API base URL (default https://api.hotdata.dev)
+
+Requires the ``[ibis]`` extra (``uv sync --extra ibis``).
+"""
+
+from __future__ import annotations
+
+import os
+import time
+
+import dlt
+import ibis
+
+from hotdata_dlt_destination import hotdata
+from hotdata_dlt_destination.configuration import HotdataCredentials
+
+DATABASE_NAME = "ibis_demo"
+SCHEMA = "public"
+
+TRIPS = [
+    {"trip_id": 1, "city": "SF", "rider": "alice", "distance_km": 4.2, "fare": 12.5},
+    {"trip_id": 2, "city": "SF", "rider": "bob", "distance_km": 1.1, "fare": 6.0},
+    {"trip_id": 3, "city": "NYC", "rider": "alice", "distance_km": 8.9, "fare": 24.0},
+    {"trip_id": 4, "city": "NYC", "rider": "carol", "distance_km": 3.3, "fare": 11.0},
+    {"trip_id": 5, "city": "SF", "rider": "carol", "distance_km": 6.7, "fare": 18.5},
+]
+
+
+@dlt.resource(name="trips", write_disposition="replace")
+def trips_resource():
+    """Yields the demo trip rows."""
+    yield TRIPS
+
+
+def _load(pipeline: dlt.Pipeline) -> None:
+    """Run the write pipeline and print the load summary."""
+    load_info = pipeline.run(trips_resource())
+    print(load_info)
+
+
+def _read_with_ibis(pipeline: dlt.Pipeline) -> None:
+    """Read the loaded table back through the live ibis.hotdata backend."""
+    con = pipeline.dataset().ibis()
+    print(f"connected: backend={con.name!r}")
+
+    trips = con.table("trips", database=("default", SCHEMA))
+
+    by_city = (
+        trips.group_by("city")
+        .aggregate(
+            n=trips.count(),
+            avg_fare=trips.fare.mean(),
+            total_km=trips.distance_km.sum(),
+        )
+        .order_by(ibis.desc("total_km"))
+    )
+    print("\nfares by city (ibis expression):")
+    print(by_city.execute())
+
+    top = con.sql(
+        "SELECT rider, SUM(fare) AS spend "
+        f'FROM "default"."{SCHEMA}"."trips" '
+        "GROUP BY rider ORDER BY spend DESC LIMIT 3"
+    )
+    print("\ntop riders by spend (raw SQL through ibis):")
+    print(top.execute())
+
+
+def main() -> None:
+    pipeline = dlt.pipeline(
+        pipeline_name="ibis_demo",
+        destination=hotdata(
+            credentials=HotdataCredentials(
+                api_key=os.environ["HOTDATA_API_KEY"],
+                workspace_id=os.environ["HOTDATA_WORKSPACE"],
+            ),
+            api_base_url=os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev"),
+            write_disposition="replace",
+            declared_tables=["trips"],
+            database_name=DATABASE_NAME,
+            schema=SCHEMA,
+            create_database_if_missing=True,
+        ),
+        dataset_name=SCHEMA,
+    )
+
+    _load(pipeline)
+    # Managed-table loads settle asynchronously server-side; give the read a moment.
+    time.sleep(2)
+    _read_with_ibis(pipeline)
+
+
+if __name__ == "__main__":
+    main()

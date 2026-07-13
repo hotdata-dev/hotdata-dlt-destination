@@ -382,14 +382,47 @@ def test_ibis_expression_reads(backend, tmp_path):
     assert by["claude-opus-4-8"] == (812 + 590) / 2
 
 
-def test_ibis_live_backend_unsupported(backend, tmp_path):
-    # The live ibis backend (dataset().ibis()) hard-dispatches per destination in
-    # dlt and needs a wire connection / local files — Hotdata's remote engine has
-    # neither, so dlt raises. Encodes the boundary so a future change is deliberate.
+def test_ibis_live_backend(backend, tmp_path):
+    # dataset().ibis() returns a live ibis.hotdata backend, with config mapped
+    # onto the connection and the managed database bound by id. No query runs, so
+    # nothing hits the network.
     pytest.importorskip("ibis")
+    pytest.importorskip("ibis_hotdata")
     pipe = _spans_pipeline(tmp_path)
-    with pytest.raises(NotImplementedError):
-        pipe.dataset().ibis()
+    con = pipe.dataset().ibis()
+    assert con.name == "hotdata"
+    assert con._default_schema == "public"
+    assert con._database_id == backend.name_to_id["e2e_read"]
+
+
+def test_ibis_backend_delegates_non_hotdata(monkeypatch):
+    # A non-Hotdata client falls through to dlt's original create_ibis_backend.
+    import hotdata_dlt_destination.ibis_backend as ib
+
+    captured = {}
+
+    def fake_original(destination, client, read_only=False, schemas=()):
+        captured["read_only"] = read_only
+        return "delegated"
+
+    monkeypatch.setattr(ib, "_original_create_ibis_backend", fake_original)
+    result = ib._create_ibis_backend("duckdb", object(), read_only=True, schemas=())
+    assert result == "delegated"
+    assert captured["read_only"] is True
+
+
+def test_install_ibis_backend_idempotent():
+    # Re-installing leaves our wrapper in place and never captures itself as the
+    # delegated original.
+    pytest.importorskip("ibis")
+    import dlt.helpers.ibis as dlt_ibis
+
+    import hotdata_dlt_destination.ibis_backend as ib
+
+    ib.install_ibis_backend()
+    ib.install_ibis_backend()
+    assert dlt_ibis.create_ibis_backend is ib._create_ibis_backend
+    assert ib._original_create_ibis_backend is not ib._create_ibis_backend
 
 
 def test_has_dataset_true_after_load(backend, tmp_path):

@@ -47,6 +47,9 @@ dlt handles extraction, schema inference, and batching. This package is a **nati
 pip install hotdata-dlt-destination
 # or
 uv add hotdata-dlt-destination
+
+# with the live ibis backend (dataset().ibis()):
+pip install "hotdata-dlt-destination[ibis]"
 ```
 
 ## Quickstart
@@ -103,7 +106,7 @@ ds.table("orders").select("id", "total").where("total > 50").order_by("total").l
 
 Queries run server-side on Hotdata's Apache DataFusion engine (Postgres-compatible SQL). It's the same read API you'd use with the `duckdb`, `postgres`, or `bigquery` destinations — enabled because `hotdata` advertises dlt's SQL-client interface (`WithSqlClient`).
 
-You can also author queries with **ibis** — `dataset().table("orders").to_ibis()` gives an ibis table; build an expression and dlt compiles it to SQL and runs it through the same client. (The live ibis *backend*, `dataset().ibis()`, is not supported — dlt wires that to a direct engine connection per destination, which Hotdata's remote engine doesn't expose.)
+You can also author queries with **ibis**, two ways. `dataset().table("orders").to_ibis()` gives an ibis table that dlt compiles to SQL and runs through the same client. `dataset().ibis()` returns a live `ibis.hotdata` backend — ibis expressions and raw SQL run server-side and come back as pandas/Arrow. The live backend needs the `[ibis]` extra (see [Install](#install)).
 
 ## Feature support
 
@@ -162,7 +165,7 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 | Pipeline state sync (`WithStateSync`) | ✅ | Incremental sources resume across runs |
 | Dataset read API (`pipeline.dataset()`) | ✅ | Read loaded data as pandas / arrow / fluent SQL, server-side on DataFusion — see [Read your data back](#read-your-data-back) |
 | ibis expressions (`.table("t").to_ibis()`) | ✅ | Built as ibis, compiled to SQL, executed via the sql_client |
-| Live ibis backend (`dataset().ibis()`) | ❌ | dlt maps this to a direct per-destination engine connection; Hotdata's engine is remote (REST + DuckLake), not a wire-protocol DB or local files |
+| Live ibis backend (`dataset().ibis()`) | ✅ | Live `ibis.hotdata` connection to the remote engine; needs the `[ibis]` extra |
 | New columns | ✅ | Permissive column promotion on append/merge |
 | New tables | ✅ | A table missing on a later run is declared in place on the existing database — no recreate, no data movement |
 | Multiple tables per pipeline | ✅ | Pass every table name via `declared_tables` |
