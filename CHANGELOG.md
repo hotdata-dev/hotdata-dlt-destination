@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Live ibis backend — `pipeline.dataset().ibis()` now returns a live `ibis.hotdata` connection to the remote engine, superseding the 0.7.0 note that it was unsupported. Ibis expressions and raw SQL run server-side and return Arrow/pandas, alongside the existing `.to_ibis()` compile-to-SQL path. Behind the optional `[ibis]` extra.
+  - dlt's `create_ibis_backend` hard-dispatches per destination with no third-party hook, so the destination wraps it (`ibis_backend.py`): a Hotdata client gets the out-of-tree `hotdata-ibis` backend, every other destination is delegated unchanged. The connection binds the managed database by id.
+  - Requires `hotdata-ibis` on ibis 12 (its `0.3.0` release, id-only managed-database addressing) and `ibis-framework>=12,<13`, pulled by the `[ibis]` extra.
+  - New `HotdataClient.resolve_managed_database` (name → record with `.id`) and a `hotdata-dlt-ibis-demo` script demonstrating the load + live-read flow.
 
 ## [0.7.2] - 2026-07-09
 

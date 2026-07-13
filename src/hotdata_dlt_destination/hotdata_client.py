@@ -68,6 +68,13 @@ class HotdataClient(ManagedDatabaseClient):
             return
         self._request_with_retry(lambda: runtime.delete_managed_database(db.id))
 
+    def resolve_managed_database(self, name: str) -> ManagedDatabase:
+        """Resolve a managed database by display name to its record (carrying ``.id``).
+
+        Delegates to the runtime client, preserving its ``KeyError`` "not found" signal.
+        """
+        return self._runtime.resolve_managed_database(name)
+
     def execute_sql(self, sql: str, *, database: str) -> pa.Table:
         """Run a SQL query scoped to ``database`` and return the result as Arrow.
 

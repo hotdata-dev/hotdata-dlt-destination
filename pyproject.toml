@@ -21,6 +21,12 @@ dependencies = [
     "pyarrow>=14",
 ]
 
+[project.optional-dependencies]
+# Live ibis backend for dataset().ibis(). Pulls the out-of-tree ibis.hotdata
+# backend and ibis itself; the base install stays ibis-free. hotdata-ibis 0.3.0+
+# addresses managed databases by id, which the bridge relies on.
+ibis = ["hotdata-ibis>=0.3,<0.4", "ibis-framework>=12,<13"]
+
 [project.urls]
 Homepage = "https://hotdata.dev"
 Repository = "https://github.com/hotdata-dev/hotdata-dlt-destination"
@@ -30,6 +36,7 @@ Issues = "https://github.com/hotdata-dev/hotdata-dlt-destination/issues"
 [project.scripts]
 hotdata-dlt-destination = "hotdata_dlt_destination.cli:main"
 hotdata-dlt-demo = "hotdata_dlt_destination.pipelines.demo:main"
+hotdata-dlt-ibis-demo = "hotdata_dlt_destination.pipelines.ibis_demo:main"
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]
