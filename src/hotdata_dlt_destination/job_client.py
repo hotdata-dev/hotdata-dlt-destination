@@ -46,6 +46,7 @@ from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransien
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 from hotdata_dlt_destination.merge import (
     combine_tables,
+    resolve_merge_strategy,
     resolve_primary_key,
     resolve_write_disposition,
 )
@@ -87,6 +88,18 @@ def _table_keys(*, schema: Schema, database_name: str, schema_name: str) -> dict
         ).table_name
         keys[managed] = primary_key
     return keys
+
+
+def _is_missing_key_error(exc: Exception) -> bool:
+    """True when the server rejected a key-based mode because the table has no
+    declared key.
+
+    The server responds with "... has no declared key; a key is required for
+    mode=...". There is no typed error across the HTTP boundary, so match the
+    stable phrase — used to fall back from a native upsert to read-modify-write
+    on tables created before server-side key support.
+    """
+    return "no declared key" in str(exc).lower()
 
 
 @contextmanager
@@ -157,8 +170,54 @@ class HotdataLoadJob(RunnableLoadJob):
         )
         disposition = resolve_write_disposition(self._table_schema, self._config.write_disposition)
         primary_key = resolve_primary_key(self._table_schema)
+        # dlt keeps the merge strategy separate from write_disposition (which is
+        # only "merge"). `insert-only` must never update existing rows, so it
+        # stays off the native upsert path.
+        strategy = resolve_merge_strategy(self._table_schema) if disposition == "merge" else None
+        is_insert_only = strategy == "insert-only"
 
         batch_table = pyarrow.parquet.read_table(self._file_path)
+
+        # Declare every table's key, not just this one's, mirroring
+        # initialize_storage — a table added additively by ensure below would
+        # otherwise be declared key-less. `_schema` (the full schema) is set by
+        # the loader before run(); fall back to this table alone if it isn't.
+        schema = getattr(self, "_schema", None)
+        if schema is not None:
+            keys = _table_keys(
+                schema=schema,
+                database_name=self._config.database_name,
+                schema_name=self._config.schema,
+            )
+        else:
+            keys = {contract.table_name: primary_key} if primary_key else {}
+
+        def _apply(api: HotdataClient, upload_table, mode: str) -> None:
+            with _temp_parquet() as parquet_path:
+                write_table_parquet(upload_table, parquet_path)
+                upload_id = api.upload_parquet(parquet_path)
+                api.load_managed_table(
+                    contract.database_name,
+                    contract.table_name,
+                    schema=contract.schema,
+                    upload_id=upload_id,
+                    mode=mode,
+                )
+
+        def _combine_and_replace(api: HotdataClient, combine_disposition: str) -> None:
+            existing = api.fetch_table(
+                database=contract.database_name,
+                schema=contract.schema,
+                table=contract.table_name,
+            )
+            combined = combine_tables(
+                disposition=combine_disposition,
+                existing=existing,
+                incoming=batch_table,
+                primary_key=primary_key,
+                fallback_key="_dlt_id",
+            )
+            _apply(api, combined, "replace")
 
         try:
             with _hotdata_api(self._config) as api:
@@ -169,51 +228,32 @@ class HotdataLoadJob(RunnableLoadJob):
                         contract=contract,
                         declared_tables=list(self._config.declared_tables or []),
                     ),
-                    keys={contract.table_name: primary_key} if primary_key else None,
+                    keys=keys,
                     create_if_missing=self._config.create_database_if_missing,
                 )
 
-                # Native fast paths — upload the incoming batch and let the
-                # server apply the load mode, with no full-table
-                # read-modify-write:
-                #   append / replace  -> the mode of the same name
-                #   merge / upsert     -> upsert (update matched keys, insert the
-                #                         rest), when a primary key is declared
-                # insert-only, or a merge with no resolvable primary key, still
-                # combines client-side and replaces: the _dlt_id fallback can't
-                # match a logical row across runs, so it stays off the native
-                # key path.
+                # Native fast paths — upload the batch and let the server apply
+                # the mode, no full-table read-modify-write:
+                #   append / replace                 -> the mode of the same name
+                #   merge (keyed, not insert-only)    -> upsert (update matched
+                #                                        keys, insert the rest)
+                # A keyless merge or `insert-only` still combines client-side and
+                # replaces (the _dlt_id fallback can't match a row across runs;
+                # insert-only must not touch existing rows).
                 if disposition in ("append", "replace"):
-                    table_to_load = batch_table
-                    load_mode = disposition
-                elif disposition in ("merge", "upsert") and primary_key:
-                    table_to_load = batch_table
-                    load_mode = "upsert"
+                    _apply(api, batch_table, disposition)
+                elif disposition in ("merge", "upsert") and primary_key and not is_insert_only:
+                    try:
+                        _apply(api, batch_table, "upsert")
+                    except HotdataTerminalError as exc:
+                        # Upgrade safety: a table created before server-side key
+                        # support has no declared key and rejects upsert. Fall
+                        # back to the read-modify-write combine + replace.
+                        if not _is_missing_key_error(exc):
+                            raise
+                        _combine_and_replace(api, "merge")
                 else:
-                    existing = api.fetch_table(
-                        database=contract.database_name,
-                        schema=contract.schema,
-                        table=contract.table_name,
-                    )
-                    table_to_load = combine_tables(
-                        disposition=disposition,
-                        existing=existing,
-                        incoming=batch_table,
-                        primary_key=primary_key,
-                        fallback_key="_dlt_id",
-                    )
-                    load_mode = "replace"
-
-                with _temp_parquet() as parquet_path:
-                    write_table_parquet(table_to_load, parquet_path)
-                    upload_id = api.upload_parquet(parquet_path)
-                    api.load_managed_table(
-                        contract.database_name,
-                        contract.table_name,
-                        schema=contract.schema,
-                        upload_id=upload_id,
-                        mode=load_mode,
-                    )
+                    _combine_and_replace(api, "insert-only" if is_insert_only else disposition)
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
         except HotdataTransientError as exc:

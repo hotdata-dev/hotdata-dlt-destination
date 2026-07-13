@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Loads now use the server's native load modes instead of a client-side read-modify-write:
   - `append` / `replace` upload the batch directly (no full-table read + rewrite).
-  - `merge` (with a `primary_key`) maps to a native `upsert` — the server updates the matched keys and inserts the rest by key. The table's key is declared up front (`initialize_storage` / `add_managed_table`), so this needs the server + SDK support for declaring a key over HTTP.
-  - `insert-only`, and a `merge` with no resolvable primary key, still combine client-side and replace (the `_dlt_id` fallback can't match a logical row across runs). Requires the SDK's `load_managed_table(mode=)` / key-on-declare (see the dependency bump).
+  - `merge` (with a `primary_key`, and *not* the `insert-only` strategy) maps to a native `upsert` — the server updates the matched keys and inserts the rest by key. The table's key is declared up front (`initialize_storage` / `add_managed_table`), so this needs the server + SDK support for declaring a key over HTTP.
+  - The merge *strategy* is read explicitly (dlt's `x-merge-strategy`, separate from `write_disposition`): `insert-only` stays on the client-side combine so it never updates existing rows.
+  - A `merge` whose table has no server-side key (e.g. a table created before key support) falls back to the client-side combine + replace instead of failing, so upgrades don't break.
+  - `insert-only`, and a `merge` with no resolvable primary key, combine client-side and replace (the `_dlt_id` fallback can't match a logical row across runs). Requires the SDK's `load_managed_table(mode=)` / key-on-declare (see the dependency bump).
 
 ### Fixed
 

@@ -78,6 +78,8 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 | `replace`   | ✅ | Native `replace` — table contents fully replaced |
 | `merge`     | ✅ | Native `upsert` by `primary_key` (updates matches, inserts the rest). Without a `primary_key` it falls back to a client-side combine — see merge strategies below |
 
+> **Keys are fixed at table creation.** A table's key is declared the first time it's created in the managed database. Changing a resource's `primary_key` on a later run does **not** update the server-side key. A table that already exists *without* a key (e.g. created before this feature) can't gain one in place — the connector detects the missing key and falls back to a client-side combine for merges, so loads don't break.
+
 ### Merge strategies
 
 | Strategy        | Support | Notes |

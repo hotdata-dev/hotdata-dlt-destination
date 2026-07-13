@@ -128,7 +128,9 @@ def test_load_job_merge_combines_with_existing(tmp_path, monkeypatch) -> None:
     ]
 
 
-def _recording_api_cls(calls: dict):
+def _recording_api_cls(calls: dict, reject_mode: str | None = None):
+    from hotdata_dlt_destination.errors import HotdataTerminalError
+
     class RecordingApi:
         def __init__(self, **_kwargs: object) -> None:
             self._pending = None
@@ -146,7 +148,12 @@ def _recording_api_cls(calls: dict):
             return "upload_1"
 
         def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
+            calls.setdefault("modes", []).append(mode)
             calls["mode"] = mode
+            if reject_mode is not None and mode == reject_mode:
+                raise HotdataTerminalError(
+                    f"table '{schema}.{table}' has no declared key; a key is required for mode={mode}"
+                )
             return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
 
         def close(self) -> None:
@@ -188,6 +195,41 @@ def test_keyless_merge_falls_back_to_rmw_replace(tmp_path, monkeypatch) -> None:
     job = HotdataLoadJob(path, _config(), {"name": "orders", "write_disposition": "merge"})
     job.run()
     assert calls["mode"] == "replace"
+    assert calls.get("fetches", 0) == 1
+
+
+def test_insert_only_merge_does_not_native_upsert(tmp_path, monkeypatch) -> None:
+    # insert-only is a merge *strategy* (write_disposition is still "merge"); it
+    # must NOT take the native upsert path, which would update existing rows.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(tmp_path, [{"id": 1, "_dlt_id": "a"}])
+    job = HotdataLoadJob(
+        path,
+        _config(),
+        {
+            "name": "orders",
+            "write_disposition": "merge",
+            "primary_key": ["id"],
+            "x-merge-strategy": "insert-only",
+        },
+    )
+    job.run()
+    assert calls["mode"] == "replace"  # client-side combine, not native upsert
+    assert calls.get("fetches", 0) == 1
+
+
+def test_upsert_falls_back_to_rmw_on_missing_server_key(tmp_path, monkeypatch) -> None:
+    # A table created before server-side key support has no declared key and
+    # rejects upsert; the connector must fall back to combine + replace, not fail.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls, reject_mode="upsert"))
+    path = _write_parquet(tmp_path, [{"id": 1, "_dlt_id": "a"}])
+    job = HotdataLoadJob(
+        path, _config(), {"name": "orders", "write_disposition": "merge", "primary_key": ["id"]}
+    )
+    job.run()  # must not raise
+    assert calls["modes"] == ["upsert", "replace"]  # tried native, then fell back
     assert calls.get("fetches", 0) == 1
 
 

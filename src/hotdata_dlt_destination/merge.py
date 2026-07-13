@@ -30,6 +30,23 @@ def resolve_primary_key(table: TTableSchema) -> list[str] | None:
     return hinted or None
 
 
+def resolve_merge_strategy(table: TTableSchema) -> str | None:
+    """The table's declared merge strategy (dlt's ``x-merge-strategy`` hint), or
+    ``None`` when unset.
+
+    dlt keeps the strategy separate from ``write_disposition`` (which is only
+    ``"merge"``), so it must be read explicitly to tell an update-and-insert
+    ``upsert`` apart from an ``insert-only`` load — the latter must never update
+    existing rows.
+    """
+    from dlt.common.schema.utils import get_merge_strategy
+
+    name = table.get("name")
+    if not name:
+        return None
+    return get_merge_strategy({name: table}, name)
+
+
 def row_key(row: dict[str, Any], keys: list[str]) -> tuple[Any, ...]:
     values = tuple(row.get(key) for key in keys)
     missing = [k for k, v in zip(keys, values, strict=True) if v is None]
