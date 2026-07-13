@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.8.0] - 2026-07-13
+
 ### Added
 
 - Live ibis backend — `pipeline.dataset().ibis()` now returns a live `ibis.hotdata` connection to the remote engine, superseding the 0.7.0 note that it was unsupported. Ibis expressions and raw SQL run server-side and return Arrow/pandas, alongside the existing `.to_ibis()` compile-to-SQL path. Behind the optional `[ibis]` extra.
