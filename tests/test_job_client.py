@@ -141,7 +141,6 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
 
         def fetch_table(self, *, database, schema, table):
             calls["fetches"] = calls.get("fetches", 0) + 1
-            return None
 
         def upload_parquet(self, path: str) -> str:
             self._pending = pq.read_table(path)
@@ -151,9 +150,7 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
             calls.setdefault("modes", []).append(mode)
             calls["mode"] = mode
             if reject_mode is not None and mode == reject_mode:
-                raise HotdataTerminalError(
-                    f"table '{schema}.{table}' has no declared key; a key is required for mode={mode}"
-                )
+                raise HotdataTerminalError(f"{table}: no declared key; required for mode={mode}")
             return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
 
         def close(self) -> None:

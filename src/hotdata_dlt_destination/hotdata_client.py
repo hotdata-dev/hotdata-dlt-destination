@@ -28,8 +28,7 @@ class HotdataClient(ManagedDatabaseClient):
         keys: dict[str, list[str]] | None = None,
         create_if_missing: bool,
     ) -> ManagedDatabase:
-        # ``keys`` maps a table name to its row-identity columns; a declared key
-        # enables the key-based load modes (delete/update/upsert) on that table.
+        # keys: table name -> key columns (enables delete/update/upsert on it)
         keys = keys or {}
         runtime = self._runtime
 

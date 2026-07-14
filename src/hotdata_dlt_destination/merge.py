@@ -14,12 +14,8 @@ def resolve_write_disposition(table: TTableSchema, default: str) -> str:
 
 
 def resolve_primary_key(table: TTableSchema) -> list[str] | None:
-    # A top-level table key wins when present, but dlt normally encodes a
-    # resource's ``primary_key`` as per-column hints (``columns[c].primary_key
-    # = True``), NOT a table-level key — so fall back to reading those hints.
-    # Without this the key is never found and merge/upsert silently dedupes by
-    # the row-unique ``_dlt_id`` fallback, which cannot match the same logical
-    # row across runs (produces duplicates instead of updating in place).
+    # dlt encodes primary_key as per-column hints, not a top-level table key —
+    # read those too (else merge falls back to _dlt_id and duplicates across runs).
     primary_key = table.get("primary_key")
     if primary_key is not None:
         if isinstance(primary_key, str):
@@ -31,13 +27,10 @@ def resolve_primary_key(table: TTableSchema) -> list[str] | None:
 
 
 def resolve_merge_strategy(table: TTableSchema) -> str | None:
-    """The table's declared merge strategy (dlt's ``x-merge-strategy`` hint), or
-    ``None`` when unset.
+    """The table's merge strategy (dlt's ``x-merge-strategy``), or None.
 
-    dlt keeps the strategy separate from ``write_disposition`` (which is only
-    ``"merge"``), so it must be read explicitly to tell an update-and-insert
-    ``upsert`` apart from an ``insert-only`` load — the latter must never update
-    existing rows.
+    Read separately from ``write_disposition`` (always ``"merge"``) to tell an
+    ``upsert`` from an ``insert-only`` load.
     """
     from dlt.common.schema.utils import get_merge_strategy
 
@@ -76,14 +69,10 @@ def merge_rows(
 
 
 def _string_view_to_string(table: pa.Table) -> pa.Table:
-    """Cast Arrow view/large string+binary columns to their plain forms.
+    """Cast Arrow view/large string+binary columns to plain string/binary.
 
-    The server's Arrow read path returns string columns as ``string_view``
-    (Utf8View); pyarrow refuses to concat/unify Utf8View against the plain
-    ``string`` (Utf8) columns of an incoming parquet batch
-    (``ArrowTypeError: incompatible types: string_view vs string``).
-    Normalising both sides to ``string``/``binary`` keeps the read-modify-write
-    combine working across pyarrow/Arrow encodings.
+    The server returns strings as Utf8View, which pyarrow won't concat/unify
+    with the plain Utf8 of an incoming parquet batch.
     """
     new_fields = []
     changed = False
@@ -116,8 +105,7 @@ def combine_tables(
     """
     if disposition == "replace" or existing is None or len(existing) == 0:
         return incoming
-    # Normalise view/large encodings so the server's reads combine with the
-    # incoming batch regardless of Arrow string representation.
+    # normalise Arrow string encodings so the two sides concat/unify
     existing = _string_view_to_string(existing)
     incoming = _string_view_to_string(incoming)
     if disposition == "append":

@@ -72,10 +72,7 @@ def _declared_tables(*, contract: TableContract, declared_tables: list[str] | No
 
 
 def _table_keys(*, schema: Schema, database_name: str, schema_name: str) -> dict[str, list[str]]:
-    """Managed-table-name -> declared key columns, from each dlt table's
-    ``primary_key`` hint. Declaring a key enables the key-based load modes
-    (delete/update/upsert) on that table; tables without one stay
-    replace/append-only."""
+    """Managed-table-name -> key columns, from each dlt table's primary_key."""
     keys: dict[str, list[str]] = {}
     for name, table_schema in schema.tables.items():
         if _is_internal_table(name):
@@ -91,14 +88,7 @@ def _table_keys(*, schema: Schema, database_name: str, schema_name: str) -> dict
 
 
 def _is_missing_key_error(exc: Exception) -> bool:
-    """True when the server rejected a key-based mode because the table has no
-    declared key.
-
-    The server responds with "... has no declared key; a key is required for
-    mode=...". There is no typed error across the HTTP boundary, so match the
-    stable phrase — used to fall back from a native upsert to read-modify-write
-    on tables created before server-side key support.
-    """
+    # No typed error crosses the HTTP boundary, so match the server's phrase.
     return "no declared key" in str(exc).lower()
 
 
@@ -170,18 +160,15 @@ class HotdataLoadJob(RunnableLoadJob):
         )
         disposition = resolve_write_disposition(self._table_schema, self._config.write_disposition)
         primary_key = resolve_primary_key(self._table_schema)
-        # dlt keeps the merge strategy separate from write_disposition (which is
-        # only "merge"). `insert-only` must never update existing rows, so it
-        # stays off the native upsert path.
+        # merge strategy is separate from write_disposition; insert-only must not
+        # update existing rows, so keep it off the native upsert path.
         strategy = resolve_merge_strategy(self._table_schema) if disposition == "merge" else None
         is_insert_only = strategy == "insert-only"
 
         batch_table = pyarrow.parquet.read_table(self._file_path)
 
-        # Declare every table's key, not just this one's, mirroring
-        # initialize_storage — a table added additively by ensure below would
-        # otherwise be declared key-less. `_schema` (the full schema) is set by
-        # the loader before run(); fall back to this table alone if it isn't.
+        # Declare every table's key (mirrors initialize_storage). `_schema` is
+        # set by the loader before run(); fall back to just this table if not.
         schema = getattr(self, "_schema", None)
         if schema is not None:
             keys = _table_keys(
@@ -232,23 +219,17 @@ class HotdataLoadJob(RunnableLoadJob):
                     create_if_missing=self._config.create_database_if_missing,
                 )
 
-                # Native fast paths — upload the batch and let the server apply
-                # the mode, no full-table read-modify-write:
-                #   append / replace                 -> the mode of the same name
-                #   merge (keyed, not insert-only)    -> upsert (update matched
-                #                                        keys, insert the rest)
-                # A keyless merge or `insert-only` still combines client-side and
-                # replaces (the _dlt_id fallback can't match a row across runs;
-                # insert-only must not touch existing rows).
+                # Native paths (no read-modify-write): append/replace as-is;
+                # keyed merge -> upsert. Keyless merge or insert-only fall back
+                # to a client-side combine + replace.
                 if disposition in ("append", "replace"):
                     _apply(api, batch_table, disposition)
                 elif disposition in ("merge", "upsert") and primary_key and not is_insert_only:
                     try:
                         _apply(api, batch_table, "upsert")
                     except HotdataTerminalError as exc:
-                        # Upgrade safety: a table created before server-side key
-                        # support has no declared key and rejects upsert. Fall
-                        # back to the read-modify-write combine + replace.
+                        # Pre-key-support tables reject upsert (no declared key)
+                        # -> fall back to the combine + replace path.
                         if not _is_missing_key_error(exc):
                             raise
                         _combine_and_replace(api, "merge")
