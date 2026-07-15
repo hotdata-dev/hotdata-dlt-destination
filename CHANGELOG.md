@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.9.0] - 2026-07-15
+
 ### Changed
 
 - Loads use the server's native load modes instead of a client-side read-modify-write: `append`/`replace` upload directly, and `merge` with a `primary_key` maps to a native `upsert`. `insert-only`, and `merge` without a resolvable key, still combine client-side and replace. Requires the SDK's `load_managed_table(mode=)` and key-on-declare (see the dependency bump).
+- Require `hotdata-ibis>=0.3.1` for the `[ibis]` extra: `0.3.0` pinned `hotdata<0.7` and can't coexist with the 0.7 client this release needs.
 
 ### Fixed
 
