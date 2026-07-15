@@ -351,7 +351,7 @@ requires-dist = [
     { name = "dlt", specifier = ">=1.28.1,<1.29" },
     { name = "hotdata", specifier = ">=0.7.0,<0.8" },
     { name = "hotdata-framework", specifier = ">=0.7.0,<0.8" },
-    { name = "hotdata-ibis", marker = "extra == 'ibis'", specifier = ">=0.3,<0.4" },
+    { name = "hotdata-ibis", marker = "extra == 'ibis'", specifier = ">=0.3.1,<0.4" },
     { name = "ibis-framework", marker = "extra == 'ibis'", specifier = ">=12,<13" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=14" },
