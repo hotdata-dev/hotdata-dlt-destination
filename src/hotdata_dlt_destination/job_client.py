@@ -46,6 +46,7 @@ from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransien
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 from hotdata_dlt_destination.merge import (
     combine_tables,
+    resolve_merge_strategy,
     resolve_primary_key,
     resolve_write_disposition,
 )
@@ -68,6 +69,27 @@ def _declared_tables(*, contract: TableContract, declared_tables: list[str] | No
         table_names=declared_tables or [],
     )
     return sorted({*normalized, contract.table_name, *_INTERNAL_TABLE_NAMES})
+
+
+def _table_keys(*, schema: Schema, database_name: str, schema_name: str) -> dict[str, list[str]]:
+    """Managed-table-name -> key columns, from each dlt table's primary_key."""
+    keys: dict[str, list[str]] = {}
+    for name, table_schema in schema.tables.items():
+        if _is_internal_table(name):
+            continue
+        primary_key = resolve_primary_key(table_schema)
+        if not primary_key:
+            continue
+        managed = TableContract.from_table_schema(
+            table_schema, database_name=database_name, schema=schema_name
+        ).table_name
+        keys[managed] = primary_key
+    return keys
+
+
+def _is_missing_key_error(exc: Exception) -> bool:
+    # No typed error crosses the HTTP boundary, so match the server's phrase.
+    return "no declared key" in str(exc).lower()
 
 
 @contextmanager
@@ -138,8 +160,51 @@ class HotdataLoadJob(RunnableLoadJob):
         )
         disposition = resolve_write_disposition(self._table_schema, self._config.write_disposition)
         primary_key = resolve_primary_key(self._table_schema)
+        # merge strategy is separate from write_disposition; insert-only must not
+        # update existing rows, so keep it off the native upsert path.
+        strategy = resolve_merge_strategy(self._table_schema) if disposition == "merge" else None
+        is_insert_only = strategy == "insert-only"
 
         batch_table = pyarrow.parquet.read_table(self._file_path)
+
+        # Declare every table's key (mirrors initialize_storage). `_schema` is
+        # set by the loader before run(); fall back to just this table if not.
+        schema = getattr(self, "_schema", None)
+        if schema is not None:
+            keys = _table_keys(
+                schema=schema,
+                database_name=self._config.database_name,
+                schema_name=self._config.schema,
+            )
+        else:
+            keys = {contract.table_name: primary_key} if primary_key else {}
+
+        def _apply(api: HotdataClient, upload_table, mode: str) -> None:
+            with _temp_parquet() as parquet_path:
+                write_table_parquet(upload_table, parquet_path)
+                upload_id = api.upload_parquet(parquet_path)
+                api.load_managed_table(
+                    contract.database_name,
+                    contract.table_name,
+                    schema=contract.schema,
+                    upload_id=upload_id,
+                    mode=mode,
+                )
+
+        def _combine_and_replace(api: HotdataClient, combine_disposition: str) -> None:
+            existing = api.fetch_table(
+                database=contract.database_name,
+                schema=contract.schema,
+                table=contract.table_name,
+            )
+            combined = combine_tables(
+                disposition=combine_disposition,
+                existing=existing,
+                incoming=batch_table,
+                primary_key=primary_key,
+                fallback_key="_dlt_id",
+            )
+            _apply(api, combined, "replace")
 
         try:
             with _hotdata_api(self._config) as api:
@@ -150,33 +215,26 @@ class HotdataLoadJob(RunnableLoadJob):
                         contract=contract,
                         declared_tables=list(self._config.declared_tables or []),
                     ),
+                    keys=keys,
                     create_if_missing=self._config.create_database_if_missing,
                 )
 
-                table_to_load = batch_table
-                if disposition != "replace":
-                    existing = api.fetch_table(
-                        database=contract.database_name,
-                        schema=contract.schema,
-                        table=contract.table_name,
-                    )
-                    table_to_load = combine_tables(
-                        disposition=disposition,
-                        existing=existing,
-                        incoming=batch_table,
-                        primary_key=primary_key,
-                        fallback_key="_dlt_id",
-                    )
-
-                with _temp_parquet() as parquet_path:
-                    write_table_parquet(table_to_load, parquet_path)
-                    upload_id = api.upload_parquet(parquet_path)
-                    api.load_managed_table(
-                        contract.database_name,
-                        contract.table_name,
-                        schema=contract.schema,
-                        upload_id=upload_id,
-                    )
+                # Native paths (no read-modify-write): append/replace as-is;
+                # keyed merge -> upsert. Keyless merge or insert-only fall back
+                # to a client-side combine + replace.
+                if disposition in ("append", "replace"):
+                    _apply(api, batch_table, disposition)
+                elif disposition in ("merge", "upsert") and primary_key and not is_insert_only:
+                    try:
+                        _apply(api, batch_table, "upsert")
+                    except HotdataTerminalError as exc:
+                        # Pre-key-support tables reject upsert (no declared key)
+                        # -> fall back to the combine + replace path.
+                        if not _is_missing_key_error(exc):
+                            raise
+                        _combine_and_replace(api, "merge")
+                else:
+                    _combine_and_replace(api, "insert-only" if is_insert_only else disposition)
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
         except HotdataTransientError as exc:
@@ -243,6 +301,11 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                     self.config.database_name,
                     schema=self.config.schema,
                     tables=all_tables,
+                    keys=_table_keys(
+                        schema=self.schema,
+                        database_name=self.config.database_name,
+                        schema_name=self.config.schema,
+                    ),
                     create_if_missing=self.config.create_database_if_missing,
                 )
         except HotdataTerminalError as exc:

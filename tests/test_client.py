@@ -23,6 +23,7 @@ def test_upload_and_load_managed_table() -> None:
             *,
             schema: str,
             upload_id: str,
+            mode: str = "replace",
         ) -> SimpleNamespace:
             self.load_calls += 1
             assert database == "dlt"
@@ -338,12 +339,12 @@ class _EvoRuntime:
     def list_managed_tables(self, name, *, schema):
         return [SimpleNamespace(table=t) for t in self._existing_tables]
 
-    def add_managed_table(self, database, table, *, schema):
+    def add_managed_table(self, database, table, *, schema, key=None):
         self.added.append((database, table, schema))
         self._existing_tables.append(table)
         return SimpleNamespace(table=table, schema=schema)
 
-    def create_managed_database(self, *, description, schema, tables):
+    def create_managed_database(self, *, description, schema, tables, keys=None):
         self.created.append((description, schema, list(tables)))
         return SimpleNamespace(id="new_db")
 
@@ -354,7 +355,7 @@ class _EvoRuntime:
         self.uploaded.append(path)
         return "up_1"
 
-    def load_managed_table(self, database, table, *, schema, upload_id):
+    def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
         self.loaded.append((database, table, schema, upload_id))
         return SimpleNamespace()
 

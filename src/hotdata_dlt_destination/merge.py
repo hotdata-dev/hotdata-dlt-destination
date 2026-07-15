@@ -14,12 +14,30 @@ def resolve_write_disposition(table: TTableSchema, default: str) -> str:
 
 
 def resolve_primary_key(table: TTableSchema) -> list[str] | None:
+    # dlt encodes primary_key as per-column hints, not a top-level table key —
+    # read those too (else merge falls back to _dlt_id and duplicates across runs).
     primary_key = table.get("primary_key")
-    if primary_key is None:
+    if primary_key is not None:
+        if isinstance(primary_key, str):
+            return [primary_key]
+        return [str(key) for key in primary_key]
+    columns = table.get("columns") or {}
+    hinted = [name for name, col in columns.items() if col.get("primary_key")]
+    return hinted or None
+
+
+def resolve_merge_strategy(table: TTableSchema) -> str | None:
+    """The table's merge strategy (dlt's ``x-merge-strategy``), or None.
+
+    Read separately from ``write_disposition`` (always ``"merge"``) to tell an
+    ``upsert`` from an ``insert-only`` load.
+    """
+    from dlt.common.schema.utils import get_merge_strategy
+
+    name = table.get("name")
+    if not name:
         return None
-    if isinstance(primary_key, str):
-        return [primary_key]
-    return [str(key) for key in primary_key]
+    return get_merge_strategy({name: table}, name)
 
 
 def row_key(row: dict[str, Any], keys: list[str]) -> tuple[Any, ...]:
@@ -50,6 +68,27 @@ def merge_rows(
     return merged
 
 
+def _string_view_to_string(table: pa.Table) -> pa.Table:
+    """Cast Arrow view/large string+binary columns to plain string/binary.
+
+    The server returns strings as Utf8View, which pyarrow won't concat/unify
+    with the plain Utf8 of an incoming parquet batch.
+    """
+    new_fields = []
+    changed = False
+    for field in table.schema:
+        t = field.type
+        if pa.types.is_string_view(t) or pa.types.is_large_string(t):
+            new_fields.append(field.with_type(pa.string()))
+            changed = True
+        elif pa.types.is_binary_view(t) or pa.types.is_large_binary(t):
+            new_fields.append(field.with_type(pa.binary()))
+            changed = True
+        else:
+            new_fields.append(field)
+    return table.cast(pa.schema(new_fields)) if changed else table
+
+
 def combine_tables(
     *,
     disposition: str,
@@ -66,6 +105,9 @@ def combine_tables(
     """
     if disposition == "replace" or existing is None or len(existing) == 0:
         return incoming
+    # normalise Arrow string encodings so the two sides concat/unify
+    existing = _string_view_to_string(existing)
+    incoming = _string_view_to_string(incoming)
     if disposition == "append":
         # "permissive" fills missing columns with nulls so schema drift between
         # the existing table and the incoming batch doesn't raise an error.

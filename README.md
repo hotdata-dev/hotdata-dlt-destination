@@ -116,9 +116,11 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 
 | Disposition | Support | Notes |
 |-------------|:-------:|-------|
-| `append`    | ✅ | Existing rows kept; new batch appended (read-modify-write) |
-| `replace`   | ✅ | `truncate-and-insert` — table contents fully replaced |
-| `merge`     | ✅ | Upsert by `primary_key` — see merge strategies below |
+| `append`    | ✅ | Native `append` — the batch is added; existing data untouched |
+| `replace`   | ✅ | Native `replace` — table contents fully replaced |
+| `merge`     | ✅ | Native `upsert` by `primary_key` (updates matches, inserts the rest). Without a `primary_key` it falls back to a client-side combine — see merge strategies below |
+
+> **Keys are fixed at table creation.** A table's key is declared the first time it's created in the managed database. Changing a resource's `primary_key` on a later run does **not** update the server-side key. A table that already exists *without* a key (e.g. created before this feature) can't gain one in place — the connector detects the missing key and falls back to a client-side combine for merges, so loads don't break.
 
 ### Merge strategies
 
@@ -279,9 +281,9 @@ Each pipeline run:
 
 1. dlt serializes your data to Parquet
 2. The Parquet file is uploaded to Hotdata
-3. `load_managed_table` replaces the target table with the new data
+3. `load_managed_table` applies it with a native load mode
 
-For `append`, `merge`, `upsert`, and `insert-only`, the destination reads the current table contents first, combines in Python (by `primary_key`, falling back to dlt's `_dlt_id`), then writes the combined result back. This is done transparently — your resource just yields rows.
+`replace` and `append` apply the uploaded batch directly. `merge` maps to a native `upsert` — the server matches rows by the table's declared key (from your resource's `primary_key`, declared on the table at setup) and updates the matches while inserting the rest — with no full-table read. Only `insert-only`, and a `merge` on a table without a resolvable `primary_key`, still read the current contents, combine in Python (falling back to dlt's `_dlt_id`), and replace. This is all transparent — your resource just yields rows.
 
 The destination preserves dlt's native `_dlt_id` / `_dlt_load_id` columns and persists dlt's schema-version, load, and pipeline-state tables in the managed database so incremental sources can restore their state on the next run. No extra columns are added.
 

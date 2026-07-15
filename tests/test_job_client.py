@@ -29,7 +29,7 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
         def __init__(self, **_kwargs: object) -> None:
             self._pending: pa.Table | None = None
 
-        def ensure_managed_database(self, name, *, schema, tables, create_if_missing):
+        def ensure_managed_database(self, name, *, schema, tables, keys=None, create_if_missing):
             return SimpleNamespace(id="db_1")
 
         def fetch_table(self, *, database, schema, table):
@@ -39,7 +39,7 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
             self._pending = pq.read_table(path)
             return "upload_1"
 
-        def load_managed_table(self, database, table, *, schema, upload_id):
+        def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
             assert self._pending is not None
             store[table] = self._pending
             return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
@@ -128,6 +128,108 @@ def test_load_job_merge_combines_with_existing(tmp_path, monkeypatch) -> None:
     ]
 
 
+def _recording_api_cls(calls: dict, reject_mode: str | None = None):
+    from hotdata_dlt_destination.errors import HotdataTerminalError
+
+    class RecordingApi:
+        def __init__(self, **_kwargs: object) -> None:
+            self._pending = None
+
+        def ensure_managed_database(self, name, *, schema, tables, keys=None, create_if_missing):
+            calls["keys"] = keys
+            return SimpleNamespace(id="db_1")
+
+        def fetch_table(self, *, database, schema, table):
+            calls["fetches"] = calls.get("fetches", 0) + 1
+
+        def upload_parquet(self, path: str) -> str:
+            self._pending = pq.read_table(path)
+            return "upload_1"
+
+        def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
+            calls.setdefault("modes", []).append(mode)
+            calls["mode"] = mode
+            if reject_mode is not None and mode == reject_mode:
+                raise HotdataTerminalError(f"{table}: no declared key; required for mode={mode}")
+            return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
+
+        def close(self) -> None:
+            return None
+
+    return RecordingApi
+
+
+def test_merge_with_key_uses_native_upsert_no_rmw(tmp_path, monkeypatch) -> None:
+    # merge + a declared primary key -> native mode=upsert, key declared on
+    # ensure, and NO full-table read-modify-write.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(tmp_path, [{"id": 1, "_dlt_id": "a"}])
+    job = HotdataLoadJob(
+        path, _config(), {"name": "orders", "write_disposition": "merge", "primary_key": ["id"]}
+    )
+    job.run()
+    assert calls["mode"] == "upsert"
+    assert calls.get("fetches", 0) == 0
+    assert calls["keys"] == {"orders": ["id"]}
+
+
+def test_append_uses_native_append_no_rmw(tmp_path, monkeypatch) -> None:
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(tmp_path, [{"id": 1, "_dlt_id": "a"}])
+    job = HotdataLoadJob(path, _config(), {"name": "orders", "write_disposition": "append"})
+    job.run()
+    assert calls["mode"] == "append"
+    assert calls.get("fetches", 0) == 0
+
+
+def test_keyless_merge_falls_back_to_rmw_replace(tmp_path, monkeypatch) -> None:
+    # merge with no resolvable key -> client-side combine, then replace.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(tmp_path, [{"id": 1, "_dlt_id": "a"}])
+    job = HotdataLoadJob(path, _config(), {"name": "orders", "write_disposition": "merge"})
+    job.run()
+    assert calls["mode"] == "replace"
+    assert calls.get("fetches", 0) == 1
+
+
+def test_insert_only_merge_does_not_native_upsert(tmp_path, monkeypatch) -> None:
+    # insert-only is a merge *strategy* (write_disposition is still "merge"); it
+    # must NOT take the native upsert path, which would update existing rows.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(tmp_path, [{"id": 1, "_dlt_id": "a"}])
+    job = HotdataLoadJob(
+        path,
+        _config(),
+        {
+            "name": "orders",
+            "write_disposition": "merge",
+            "primary_key": ["id"],
+            "x-merge-strategy": "insert-only",
+        },
+    )
+    job.run()
+    assert calls["mode"] == "replace"  # client-side combine, not native upsert
+    assert calls.get("fetches", 0) == 1
+
+
+def test_upsert_falls_back_to_rmw_on_missing_server_key(tmp_path, monkeypatch) -> None:
+    # A table created before server-side key support has no declared key and
+    # rejects upsert; the connector must fall back to combine + replace, not fail.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls, reject_mode="upsert"))
+    path = _write_parquet(tmp_path, [{"id": 1, "_dlt_id": "a"}])
+    job = HotdataLoadJob(
+        path, _config(), {"name": "orders", "write_disposition": "merge", "primary_key": ["id"]}
+    )
+    job.run()  # must not raise
+    assert calls["modes"] == ["upsert", "replace"]  # tried native, then fell back
+    assert calls.get("fetches", 0) == 1
+
+
 # --- state sync ---
 
 
@@ -153,7 +255,7 @@ def test_is_storage_initialized_false_when_missing(monkeypatch) -> None:
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        def ensure_managed_database(self, name, *, schema, tables, create_if_missing):
+        def ensure_managed_database(self, name, *, schema, tables, keys=None, create_if_missing):
             raise KeyError(name)
 
         def close(self) -> None:
