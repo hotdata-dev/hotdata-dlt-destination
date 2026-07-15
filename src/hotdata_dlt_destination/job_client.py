@@ -140,6 +140,11 @@ class HotdataLoadJob(RunnableLoadJob):
         primary_key = resolve_primary_key(self._table_schema)
 
         batch_table = pyarrow.parquet.read_table(self._file_path)
+        print(
+            f"load: {contract.table_name} <- {os.path.basename(self._file_path)}"
+            f" ({batch_table.num_rows:,} rows)",
+            flush=True,
+        )
 
         try:
             with _hotdata_api(self._config) as api:
