@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `HotdataLoadJob.run()` now logs each Parquet file as it begins loading via dlt's logger: `load: <table> <- <file> (<N> rows)`. This makes the loading phase visible in dltHub stdout instead of being a silent gap between the "loading" stage transition and completion.
+
 
 ## [0.9.0] - 2026-07-15
 

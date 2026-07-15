@@ -166,6 +166,13 @@ class HotdataLoadJob(RunnableLoadJob):
         is_insert_only = strategy == "insert-only"
 
         batch_table = pyarrow.parquet.read_table(self._file_path)
+        from dlt.common import logger
+        logger.info(
+            "load: %s <- %s (%s rows)",
+            contract.table_name,
+            os.path.basename(self._file_path),
+            f"{batch_table.num_rows:,}",
+        )
 
         # Declare every table's key (mirrors initialize_storage). `_schema` is
         # set by the loader before run(); fall back to just this table if not.
