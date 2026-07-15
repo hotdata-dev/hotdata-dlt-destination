@@ -318,8 +318,8 @@ Differences across the three are cosmetic only: the table alias (`"spans"` vs ib
 explicit `ASC`, and ibis layering an aggregate into a subquery (`SELECT … FROM (SELECT … GROUP BY …)
 ORDER BY …`) — all semantically identical, all optimized away by DataFusion. ibis also reaches past the
 fluent API (e.g. `group_by`/`aggregate`, which dlt's fluent surface doesn't expose). The only ibis mode
-that does **not** route through this path is the live backend (`dataset().ibis()`, §16) — it bypasses
-the sql_client to connect to the engine directly, which is exactly why it can't work for a REST engine.
+that does **not** route through this path is the live backend (`dataset().ibis()`, §16) — it connects to
+the engine through the `ibis.hotdata` backend rather than the sql_client.
 
 ## 11. Version linking (why this package pins both dlt *and* the Hotdata SDK)
 
@@ -409,7 +409,7 @@ stored Arrow tables, then assert full round trips:
 | `dataset.row_counts()`, `dataset.tables()` | aggregate/catalog paths | offline |
 | `has_dataset()` | override | unit |
 | ibis **expressions** (`.table("t").to_ibis()` → compile → SQL) | sqlglot(postgres) → `execute_query` | offline + live |
-| ibis **live backend** (`dataset().ibis()`) | raises `NotImplementedError` | offline (boundary test) |
+| ibis **live backend** (`dataset().ibis()`) | wraps dlt's `create_ibis_backend` → `ibis.hotdata` | offline + live |
 
 ### 13d. Live e2e / manual — the round-trip demo, against **local runtimedb**
 This is the "actually running it" test, and the **primary integration target** — the real DataFusion
@@ -491,10 +491,10 @@ print(tbl.schema)
 |---|---|---|
 | **M1** | `HotdataSqlClient` + `HotdataCursor` + `WithSqlClient` wiring | `dataset().table("t").df()` returns loaded rows against the in-memory backend |
 | **M2** | `sqlglot_dialect="postgres"` + fluent queries | `.where()/.limit()/.order_by()`/aggregates run live on DataFusion; failures triaged |
-| **M3** | ibis support | ibis **expressions** (`.to_ibis()` → compile → SQL) run through the sql_client — **works with no extra code** (rides the postgres dialect + `execute_query`). The live ibis **backend** (`dataset().ibis()`) is **not supported** and can't be from this package (see below) |
+| **M3** | ibis support | ibis **expressions** (`.to_ibis()` → compile → SQL) run through the sql_client — **works with no extra code** (rides the postgres dialect + `execute_query`). The live ibis **backend** (`dataset().ibis()`) is supported by wrapping dlt's `create_ibis_backend` (see below) |
 | **M4** | Docs + capability matrix + version caps + CI canary | README matrix shows read ✅, transactions ❌; `roundtrip_demo.py` runs green live |
 
-**Why the live ibis backend can't be supported here.** dlt's `create_ibis_backend` (`dlt/helpers/ibis.py`) is a closed `issubclass(destination.spec, …)` dispatch; unknown destinations hit `else: raise NotImplementedError`. Every supported destination uses one of two models: a **direct wire connection** to the engine (`ibis.postgres.connect`, `ibis.snowflake.connect`, …) or an **embedded DuckDB over local files** (`ibis.duckdb.from_connection`, as lance / lancedb / filesystem / motherduck do). Hotdata fits neither — the engine is remote DataFusion behind REST, and its DuckLake parquet isn't local files our client can scan (which is also why we deliberately don't embed DuckDB, §3). Supporting it would require an upstream dlt branch **plus** a real ibis connection to Hotdata — realistically a runtimedb-side Postgres-wire endpoint or direct DuckLake catalog/storage access (which would bypass the API/auth). Out of scope; runtimedb roadmap.
+**How the live ibis backend is supported.** dlt's `create_ibis_backend` (`dlt/helpers/ibis.py`) is a closed `issubclass(destination.spec, …)` dispatch with no third-party hook; unknown destinations hit `else: raise NotImplementedError`. Rather than fork dlt, the package wraps that function (`ibis_backend.py`, installed on import): a Hotdata client gets a live `ibis.hotdata` connection — the out-of-tree `hotdata-ibis` backend, which speaks the same REST/Arrow query path as this sql_client — and every other destination is delegated to dlt's original dispatch unchanged. The connection binds the managed database by id. This became possible once `hotdata-ibis` moved to ibis 12 with id-only managed-database addressing; it ships behind the `[ibis]` extra.
 
 ## 17. Open questions
 

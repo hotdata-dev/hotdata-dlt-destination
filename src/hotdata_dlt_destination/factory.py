@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import typing as t
 
+from dlt.common.arithmetics import DEFAULT_NUMERIC_PRECISION, DEFAULT_NUMERIC_SCALE
 from dlt.common.data_writers.escape import (
     escape_postgres_identifier,
     escape_postgres_literal,
 )
 from dlt.common.destination import Destination, DestinationCapabilitiesContext
 from dlt.common.normalizers.naming import NamingConvention
+from dlt.common.wei import EVM_DECIMAL_PRECISION
 
 from hotdata_dlt_destination.configuration import (
     HotdataClientConfiguration,
@@ -49,6 +51,12 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
         caps.supports_ddl_transactions = False
         caps.supported_merge_strategies = ["upsert", "insert-only"]
         caps.supported_replace_strategies = ["truncate-and-insert"]
+        # dlt maps Decimal/wei columns without explicit precision hints onto parquet
+        # numeric types using these caps; left unset (None), normalize crashes in
+        # get_py_arrow_numeric ("'NoneType' object is not subscriptable"). Use dlt's
+        # default numeric precision — DataFusion presents a Postgres numeric surface.
+        caps.decimal_precision = (DEFAULT_NUMERIC_PRECISION, DEFAULT_NUMERIC_SCALE)
+        caps.wei_precision = (EVM_DECIMAL_PRECISION, 0)
         caps.sqlglot_dialect = "postgres"
         caps.escape_identifier = escape_postgres_identifier
         caps.escape_literal = escape_postgres_literal

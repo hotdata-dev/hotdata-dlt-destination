@@ -267,6 +267,31 @@ def test_load_replace_and_bookkeeping(backend, tmp_path):
     assert backend.rows("e2e_basic", "_dlt_version") is not None
 
 
+def test_load_decimal_column(backend, tmp_path):
+    # Regression: capabilities left decimal_precision unset, so normalizing a
+    # Decimal column without explicit precision hints crashed to parquet
+    # (get_py_arrow_numeric: "'NoneType' object is not subscriptable"). The value
+    # must load and round-trip using the destination's default numeric precision.
+    from decimal import Decimal
+
+    @dlt.resource(name="inventory", write_disposition="replace")
+    def inventory():
+        yield [{"id": 1, "price": Decimal("1.50")}, {"id": 2, "price": Decimal("2.50")}]
+
+    dlt.pipeline(
+        pipeline_name="p_decimal",
+        destination=_dest("e2e_decimal", ["inventory"]),
+        dataset_name="public",
+        pipelines_dir=str(tmp_path),
+    ).run(inventory())
+
+    rows = backend.rows("e2e_decimal", "inventory")
+    assert rows is not None
+    by_id = {r["id"]: r["price"] for r in rows}
+    assert by_id[1] == Decimal("1.50")
+    assert by_id[2] == Decimal("2.50")
+
+
 def test_nested_child_tables(backend, tmp_path):
     @dlt.resource(name="orders", write_disposition="replace")
     def orders():
@@ -402,14 +427,47 @@ def test_ibis_expression_reads(backend, tmp_path):
     assert by["claude-opus-4-8"] == (812 + 590) / 2
 
 
-def test_ibis_live_backend_unsupported(backend, tmp_path):
-    # The live ibis backend (dataset().ibis()) hard-dispatches per destination in
-    # dlt and needs a wire connection / local files — Hotdata's remote engine has
-    # neither, so dlt raises. Encodes the boundary so a future change is deliberate.
+def test_ibis_live_backend(backend, tmp_path):
+    # dataset().ibis() returns a live ibis.hotdata backend, with config mapped
+    # onto the connection and the managed database bound by id. No query runs, so
+    # nothing hits the network.
     pytest.importorskip("ibis")
+    pytest.importorskip("ibis_hotdata")
     pipe = _spans_pipeline(tmp_path)
-    with pytest.raises(NotImplementedError):
-        pipe.dataset().ibis()
+    con = pipe.dataset().ibis()
+    assert con.name == "hotdata"
+    assert con._default_schema == "public"
+    assert con._database_id == backend.name_to_id["e2e_read"]
+
+
+def test_ibis_backend_delegates_non_hotdata(monkeypatch):
+    # A non-Hotdata client falls through to dlt's original create_ibis_backend.
+    import hotdata_dlt_destination.ibis_backend as ib
+
+    captured = {}
+
+    def fake_original(destination, client, read_only=False, schemas=()):
+        captured["read_only"] = read_only
+        return "delegated"
+
+    monkeypatch.setattr(ib, "_original_create_ibis_backend", fake_original)
+    result = ib._create_ibis_backend("duckdb", object(), read_only=True, schemas=())
+    assert result == "delegated"
+    assert captured["read_only"] is True
+
+
+def test_install_ibis_backend_idempotent():
+    # Re-installing leaves our wrapper in place and never captures itself as the
+    # delegated original.
+    pytest.importorskip("ibis")
+    import dlt.helpers.ibis as dlt_ibis
+
+    import hotdata_dlt_destination.ibis_backend as ib
+
+    ib.install_ibis_backend()
+    ib.install_ibis_backend()
+    assert dlt_ibis.create_ibis_backend is ib._create_ibis_backend
+    assert ib._original_create_ibis_backend is not ib._create_ibis_backend
 
 
 def test_has_dataset_true_after_load(backend, tmp_path):
@@ -505,3 +563,28 @@ def test_schema_evolution_preserves_data(backend, tmp_path):
     assert orders_after is not None and len(orders_after) == 1 and orders_after[0]["id"] == 1
     assert backend.rows("e2e_evo", "customers") is not None
     assert backend.rows("e2e_evo", "_dlt_pipeline_state") is not None
+
+
+def test_hyphenated_database_name_stays_one_database(backend, tmp_path):
+    # database_name is an opaque API address (a name or a dbid), not a SQL
+    # identifier. The load jobs used to snake_case it while schema/state/
+    # bookkeeping writes used it verbatim, so a hyphenated name minted a twin
+    # database that silently received all the data — reads against the real DB
+    # then failed with "declared but has no data" (regression, 2026-07-09).
+    @dlt.resource(name="rows", write_disposition="replace")
+    def rows():
+        yield [{"n": 1}, {"n": 2}]
+
+    pipe = dlt.pipeline(
+        pipeline_name="p_hyphen",
+        destination=_dest("e2e-hyphen-db", ["rows"], "replace"),
+        dataset_name="public",
+        pipelines_dir=str(tmp_path),
+    )
+    pipe.run(rows())
+
+    # Exactly one database, under the exact name the caller addressed.
+    assert set(backend.name_to_id) == {"e2e-hyphen-db"}
+    # And the data is readable back through that same address.
+    df = pipe.dataset().table("rows").df()
+    assert sorted(df["n"].tolist()) == [1, 2]

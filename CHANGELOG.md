@@ -21,6 +21,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `merge`/`upsert` now dedupe by the resource's `primary_key`. It was read from a top-level table key that dlt never sets (dlt encodes the primary key as per-column hints), so merges silently deduped by the row-unique `_dlt_id` and produced duplicates across runs instead of updating in place.
 - Read-modify-write combines no longer fail with `ArrowTypeError: string_view vs string`: the server's Arrow reads (Utf8View) are normalised to plain string/binary before combining with the incoming batch.
 
+## [0.8.0] - 2026-07-13
+
+### Added
+
+- Live ibis backend — `pipeline.dataset().ibis()` now returns a live `ibis.hotdata` connection to the remote engine, superseding the 0.7.0 note that it was unsupported. Ibis expressions and raw SQL run server-side and return Arrow/pandas, alongside the existing `.to_ibis()` compile-to-SQL path. Behind the optional `[ibis]` extra.
+  - dlt's `create_ibis_backend` hard-dispatches per destination with no third-party hook, so the destination wraps it (`ibis_backend.py`): a Hotdata client gets the out-of-tree `hotdata-ibis` backend, every other destination is delegated unchanged. The connection binds the managed database by id.
+  - Requires `hotdata-ibis` on ibis 12 (its `0.3.0` release, id-only managed-database addressing) and `ibis-framework>=12,<13`, pulled by the `[ibis]` extra.
+  - New `HotdataClient.resolve_managed_database` (name → record with `.id`) and a `hotdata-dlt-ibis-demo` script demonstrating the load + live-read flow.
+
+## [0.7.2] - 2026-07-09
+
+### Added
+
+- MIT `LICENSE` file, `license`/`license-files` metadata in `pyproject.toml`, and a License section + badge in the README.
+
+### Changed
+
+- README reworked for open-source DX: badges, table of contents, a highlights summary, a requirements section, and `Development`/`Contributing` sections. Corrected the configuration table (retry defaults are `8` attempts / `1.5s`, not `5` / `1.0`) and documented the `api_base_url` and `loader_parallelism_strategy` options.
+- Added `[project.urls]` (Homepage, Repository, Changelog, Issues) so the PyPI page links back to the project.
+
+### Fixed
+
+- Loading a `Decimal` (or wei) column without explicit precision hints no longer crashes. The destination's capabilities left `decimal_precision`/`wei_precision` unset, so dlt's normalize step raised `TypeError: 'NoneType' object is not subscriptable` in `get_py_arrow_numeric` while mapping the column to parquet. Capabilities now declare dlt's default numeric precision `(38, 9)` and wei precision `(78, 0)`, matching the Postgres numeric surface DataFusion presents.
+
+## [0.7.1] - 2026-07-09
+
+### Fixed
+
+- A non-snake_case `database_name` (e.g. `my-hyphen-db`) no longer splits a pipeline's writes across two databases. Load jobs snake_cased the name when addressing the API — with `create_database_if_missing` that minted a twin database (`my_hyphen_db`) and loaded all data there — while schema/state/bookkeeping writes addressed the original verbatim, so reads against it failed with "declared but has no data". `database_name` and `schema` are opaque API addresses (a managed-database name or a `dbid...` id), not SQL identifiers, and now pass through verbatim on every path. Callers addressing by id were never affected.
+
 ## [0.7.0] - 2026-07-09
 
 ### Added
