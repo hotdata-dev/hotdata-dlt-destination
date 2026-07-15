@@ -149,6 +149,8 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
         def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
             calls.setdefault("modes", []).append(mode)
             calls["mode"] = mode
+            pending = self._pending.to_pylist() if self._pending is not None else None
+            calls.setdefault("uploads", []).append((mode, pending))
             if reject_mode is not None and mode == reject_mode:
                 raise HotdataTerminalError(f"{table}: no declared key; required for mode={mode}")
             return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
@@ -228,6 +230,35 @@ def test_upsert_falls_back_to_rmw_on_missing_server_key(tmp_path, monkeypatch) -
     job.run()  # must not raise
     assert calls["modes"] == ["upsert", "replace"]  # tried native, then fell back
     assert calls.get("fetches", 0) == 1
+
+
+def test_merge_hard_delete_splits_upsert_and_delete(tmp_path, monkeypatch) -> None:
+    # A merge batch carrying a hard_delete column -> upsert the live rows, delete
+    # the flagged rows by key. The delete upload carries key columns only.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(
+        tmp_path,
+        [
+            {"id": 1, "v": "a", "_dlt_id": "x", "deleted": False},
+            {"id": 2, "v": "b", "_dlt_id": "y", "deleted": True},
+        ],
+    )
+    table = {
+        "name": "orders",
+        "write_disposition": "merge",
+        "columns": {
+            "id": {"name": "id", "data_type": "bigint", "primary_key": True},
+            "deleted": {"name": "deleted", "data_type": "bool", "hard_delete": True},
+        },
+    }
+    HotdataLoadJob(path, _config(), table).run()
+
+    assert calls["modes"] == ["upsert", "delete"]
+    uploads = dict(calls["uploads"])
+    assert [r["id"] for r in uploads["upsert"]] == [1]
+    assert uploads["delete"] == [{"id": 2}]  # only the flagged key, key columns only
+    assert calls.get("fetches", 0) == 0  # native path, no read-modify-write
 
 
 # --- state sync ---
