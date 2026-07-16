@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+
+## [0.9.2] - 2026-07-15
+
+### Changed
+
+- Bumped `hotdata-framework` to 0.7.1, which streams large Parquet uploads one chunk at a time via the presigned session API instead of reading the entire file into memory. Eliminates the client-side OOM on large tables.
+
 ## [0.9.1] - 2026-07-15
 
 ### Added
