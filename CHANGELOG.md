@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [0.9.3] - 2026-07-16
+
+### Fixed
+
+- Multi-file replace data loss: tables split across multiple parquet files (e.g. under `DATA_WRITER__FILE_MAX_BYTES`) loaded every file with `mode="replace"`, so each file wiped the previous one and only the last file's rows survived. Replace-disposition tables are now truncated once per load package in `initialize_storage` (dlt's truncate-and-insert contract) and every file job loads with `mode="append"`.
+
 ## [0.9.2] - 2026-07-15
 
 ### Changed
