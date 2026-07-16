@@ -1,6 +1,6 @@
 [project]
 name = "hotdata-dlt-destination"
-version = "0.9.4"
+version = "0.9.5"
 description = "dlt destination for loading data into Hotdata managed databases."
 readme = "README.md"
 license = "MIT"
@@ -20,7 +20,7 @@ dependencies = [
     # field on the managed-table decls (client) and create_managed_database(keys=)
     # / add_managed_table(key=) / load_managed_table(mode=) (framework).
     "hotdata>=0.7.0,<0.8",
-    "hotdata-framework>=0.7.0,<0.8",
+    "hotdata-framework>=0.7.3,<0.8",
     "pandas>=2.0",
     "pyarrow>=14",
 ]
