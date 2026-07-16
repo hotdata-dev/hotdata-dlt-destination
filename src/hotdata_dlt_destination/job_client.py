@@ -226,11 +226,14 @@ class HotdataLoadJob(RunnableLoadJob):
                     create_if_missing=self._config.create_database_if_missing,
                 )
 
-                # Native paths (no read-modify-write): append/replace as-is;
-                # keyed merge -> upsert. Keyless merge or insert-only fall back
-                # to a client-side combine + replace.
+                # Native paths (no read-modify-write): append/replace both load
+                # with mode="append" — replace tables were emptied once at
+                # package init (initialize_storage truncate), so appending keeps
+                # every file of a multi-file table. Keyed merge -> upsert.
+                # Keyless merge or insert-only fall back to a client-side
+                # combine + replace.
                 if disposition in ("append", "replace"):
-                    _apply(api, batch_table, disposition)
+                    _apply(api, batch_table, "append")
                 elif disposition in ("merge", "upsert") and primary_key and not is_insert_only:
                     try:
                         _apply(api, batch_table, "upsert")
@@ -301,6 +304,11 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
             if not _is_internal_table(name)
         ]
         all_tables = sorted(set(internal + user + schema_tables))
+        keys = _table_keys(
+            schema=self.schema,
+            database_name=self.config.database_name,
+            schema_name=self.config.schema,
+        )
 
         try:
             with _hotdata_api(self.config) as api:
@@ -308,13 +316,34 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                     self.config.database_name,
                     schema=self.config.schema,
                     tables=all_tables,
-                    keys=_table_keys(
-                        schema=self.schema,
-                        database_name=self.config.database_name,
-                        schema_name=self.config.schema,
-                    ),
+                    keys=keys,
                     create_if_missing=self.config.create_database_if_missing,
                 )
+                # Truncate-and-insert replace: dlt passes the replace-disposition
+                # tables that have jobs in this package, exactly once per package
+                # (gated by begin_schema_update), before any load job runs.
+                # Emptying them here lets every file job load with mode="append",
+                # so tables split across multiple parquet files keep all files —
+                # a per-file "replace" would leave only the last file's rows.
+                for name in sorted(set(truncate_tables or ())):
+                    if _is_internal_table(name):
+                        continue
+                    table_schema = self.schema.tables.get(name)
+                    managed = (
+                        TableContract.from_table_schema(
+                            table_schema,
+                            database_name=self.config.database_name,
+                            schema=self.config.schema,
+                        ).table_name
+                        if table_schema is not None
+                        else name
+                    )
+                    api.truncate_managed_table(
+                        self.config.database_name,
+                        managed,
+                        schema=self.config.schema,
+                        key=keys.get(managed),
+                    )
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
 

@@ -41,8 +41,18 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
 
         def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
             assert self._pending is not None
-            store[table] = self._pending
+            # Mode-faithful, like the server: append accumulates, replace overwrites.
+            existing = store.get(table)
+            if mode == "append" and existing is not None:
+                store[table] = pa.concat_tables(
+                    [existing, self._pending], promote_options="permissive"
+                )
+            else:
+                store[table] = self._pending
             return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
+
+        def truncate_managed_table(self, database, table, *, schema, key=None):
+            store.pop(table, None)
 
         def close(self) -> None:
             return None
@@ -105,6 +115,51 @@ def test_load_job_replace_uploads_incoming(tmp_path, monkeypatch) -> None:
     ]
 
 
+def test_replace_multi_file_keeps_all_files(tmp_path, monkeypatch) -> None:
+    # A table split across multiple parquet files (DATA_WRITER__FILE_MAX_BYTES)
+    # runs one load job per file. Replace semantics come from the package-init
+    # truncate; each file job must APPEND, or every file wipes the previous one
+    # and only the last file's rows survive.
+    store: dict[str, pa.Table] = {}
+    monkeypatch.setattr(jc, "HotdataClient", _make_fake_api_cls(store))
+
+    for file_id, rows in (
+        ("aaa", [{"id": 1, "_dlt_id": "a"}]),
+        ("bbb", [{"id": 2, "_dlt_id": "b"}]),
+        ("ccc", [{"id": 3, "_dlt_id": "c"}]),
+    ):
+        path = str(tmp_path / f"orders.{file_id}.0.parquet")
+        pq.write_table(pa.Table.from_pylist(rows), path)
+        HotdataLoadJob(path, _config(), {"name": "orders", "write_disposition": "replace"}).run()
+
+    assert sorted(r["id"] for r in store["orders"].to_pylist()) == [1, 2, 3]
+
+
+def test_replace_file_jobs_load_with_append_mode(tmp_path, monkeypatch) -> None:
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(tmp_path, [{"id": 1, "_dlt_id": "a"}])
+    job = HotdataLoadJob(path, _config(), {"name": "orders", "write_disposition": "replace"})
+    job.run()
+    assert calls["mode"] == "append"
+    assert calls.get("fetches", 0) == 0
+
+
+def test_initialize_storage_truncates_replace_tables(monkeypatch) -> None:
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    schema = Schema("events")
+    schema.update_table(
+        {"name": "orders", "write_disposition": "replace", "columns": {}}
+    )
+    client = HotdataJobClient(schema, _config(), hotdata().capabilities())
+
+    client.initialize_storage(truncate_tables=["orders", "_dlt_loads"])
+
+    # orders truncated (with no key -> None); internal dlt tables never truncated.
+    assert calls.get("truncated") == [("orders", None)]
+
+
 def test_load_job_merge_combines_with_existing(tmp_path, monkeypatch) -> None:
     store: dict[str, pa.Table] = {
         "orders": pa.Table.from_pylist([{"id": 1, "_dlt_id": "a", "v": "old"}])
@@ -152,6 +207,9 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
             if reject_mode is not None and mode == reject_mode:
                 raise HotdataTerminalError(f"{table}: no declared key; required for mode={mode}")
             return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
+
+        def truncate_managed_table(self, database, table, *, schema, key=None):
+            calls.setdefault("truncated", []).append((table, key))
 
         def close(self) -> None:
             return None
