@@ -294,16 +294,17 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
             self.schema.state_table_name,
         ]
         user = list(self.config.declared_tables or [])
-        schema_tables = [
-            TableContract.from_table_schema(
+        # dlt schema table name -> managed table name
+        managed_names = {
+            name: TableContract.from_table_schema(
                 table_schema,
                 database_name=self.config.database_name,
                 schema=self.config.schema,
             ).table_name
             for name, table_schema in self.schema.tables.items()
             if not _is_internal_table(name)
-        ]
-        all_tables = sorted(set(internal + user + schema_tables))
+        }
+        all_tables = sorted(set(internal + user + list(managed_names.values())))
         keys = _table_keys(
             schema=self.schema,
             database_name=self.config.database_name,
@@ -328,16 +329,7 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                 for name in sorted(set(truncate_tables or ())):
                     if _is_internal_table(name):
                         continue
-                    table_schema = self.schema.tables.get(name)
-                    managed = (
-                        TableContract.from_table_schema(
-                            table_schema,
-                            database_name=self.config.database_name,
-                            schema=self.config.schema,
-                        ).table_name
-                        if table_schema is not None
-                        else name
-                    )
+                    managed = managed_names.get(name, name)
                     api.truncate_managed_table(
                         self.config.database_name,
                         managed,

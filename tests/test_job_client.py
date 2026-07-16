@@ -94,9 +94,11 @@ def test_declared_tables_includes_internal_and_target() -> None:
 # --- load job ---
 
 
-def _write_parquet(tmp_path, rows: list[dict], table: str = "orders") -> str:
+def _write_parquet(
+    tmp_path, rows: list[dict], table: str = "orders", file_id: str = "abc123"
+) -> str:
     # RunnableLoadJob parses the file name as table_name.file_id.retry_count.file_format
-    path = str(tmp_path / f"{table}.abc123.0.parquet")
+    path = str(tmp_path / f"{table}.{file_id}.0.parquet")
     pq.write_table(pa.Table.from_pylist(rows), path)
     return path
 
@@ -128,8 +130,7 @@ def test_replace_multi_file_keeps_all_files(tmp_path, monkeypatch) -> None:
         ("bbb", [{"id": 2, "_dlt_id": "b"}]),
         ("ccc", [{"id": 3, "_dlt_id": "c"}]),
     ):
-        path = str(tmp_path / f"orders.{file_id}.0.parquet")
-        pq.write_table(pa.Table.from_pylist(rows), path)
+        path = _write_parquet(tmp_path, rows, file_id=file_id)
         HotdataLoadJob(path, _config(), {"name": "orders", "write_disposition": "replace"}).run()
 
     assert sorted(r["id"] for r in store["orders"].to_pylist()) == [1, 2, 3]
