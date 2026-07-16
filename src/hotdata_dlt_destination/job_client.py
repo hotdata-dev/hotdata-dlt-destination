@@ -120,6 +120,33 @@ def _temp_parquet() -> Iterator[str]:
             os.unlink(path)
 
 
+def _truncate_table(
+    api: HotdataClient,
+    config: HotdataClientConfiguration,
+    table_name: str,
+    arrow_schema: Any,
+) -> None:
+    """Empty a managed table via a zero-row replace load.
+
+    This is the only truncate the API offers: the delete-table endpoint
+    TOMBSTONES the table — it disappears from listings but can never be
+    re-declared (add returns 409) or loaded (404 "was it deleted?"), so
+    delete + re-add is not usable. A replace load of an empty parquet with
+    the table's schema empties the contents in place and leaves the table
+    ready for appends.
+    """
+    with _temp_parquet() as parquet_path:
+        write_table_parquet(arrow_schema.empty_table(), parquet_path)
+        upload_id = api.upload_parquet(parquet_path)
+        api.load_managed_table(
+            config.database_name,
+            table_name,
+            schema=config.schema,
+            upload_id=upload_id,
+            mode="replace",
+        )
+
+
 def _upload_table(
     api: HotdataClient,
     config: HotdataClientConfiguration,
@@ -168,6 +195,13 @@ class HotdataLoadJob(RunnableLoadJob):
         is_insert_only = strategy == "insert-only"
 
         batch_table = pyarrow.parquet.read_table(self._file_path)
+        from dlt.common import logger
+        logger.info(
+            "load: %s <- %s (%s rows)",
+            contract.table_name,
+            os.path.basename(self._file_path),
+            f"{batch_table.num_rows:,}",
+        )
 
         # dlt marks rows to remove (rather than upsert) via a hard_delete column.
         hard_delete_column = resolve_hard_delete_column(self._table_schema)
@@ -229,11 +263,14 @@ class HotdataLoadJob(RunnableLoadJob):
                     create_if_missing=self._config.create_database_if_missing,
                 )
 
-                # Native paths (no read-modify-write): append/replace as-is;
-                # keyed merge -> upsert. Keyless merge or insert-only fall back
-                # to a client-side combine + replace.
+                # Native paths (no read-modify-write): append/replace both load
+                # with mode="append" — replace tables were emptied once at
+                # package init (initialize_storage truncate), so appending keeps
+                # every file of a multi-file table. Keyed merge -> upsert.
+                # Keyless merge or insert-only fall back to a client-side
+                # combine + replace.
                 if disposition in ("append", "replace"):
-                    _apply(api, batch_table, disposition)
+                    _apply(api, batch_table, "append")
                 elif disposition in ("merge", "upsert") and primary_key and not is_insert_only:
                     try:
                         if hard_delete_column is None:
@@ -316,16 +353,22 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
             self.schema.state_table_name,
         ]
         user = list(self.config.declared_tables or [])
-        schema_tables = [
-            TableContract.from_table_schema(
+        # dlt schema table name -> managed table name
+        managed_names = {
+            name: TableContract.from_table_schema(
                 table_schema,
                 database_name=self.config.database_name,
                 schema=self.config.schema,
             ).table_name
             for name, table_schema in self.schema.tables.items()
             if not _is_internal_table(name)
-        ]
-        all_tables = sorted(set(internal + user + schema_tables))
+        }
+        all_tables = sorted(set(internal + user + list(managed_names.values())))
+        keys = _table_keys(
+            schema=self.schema,
+            database_name=self.config.database_name,
+            schema_name=self.config.schema,
+        )
 
         try:
             with _hotdata_api(self.config) as api:
@@ -333,13 +376,35 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                     self.config.database_name,
                     schema=self.config.schema,
                     tables=all_tables,
-                    keys=_table_keys(
-                        schema=self.schema,
-                        database_name=self.config.database_name,
-                        schema_name=self.config.schema,
-                    ),
+                    keys=keys,
                     create_if_missing=self.config.create_database_if_missing,
                 )
+                # Truncate-and-insert replace: dlt passes the replace-disposition
+                # tables that have jobs in this package, exactly once per package
+                # (gated by begin_schema_update), before any load job runs.
+                # Emptying them here lets every file job load with mode="append",
+                # so tables split across multiple parquet files keep all files —
+                # a per-file "replace" would leave only the last file's rows.
+                from dlt.common.libs.pyarrow import columns_to_arrow
+
+                for name in sorted(set(truncate_tables or ())):
+                    if _is_internal_table(name) or name not in self.schema.tables:
+                        continue
+                    columns = {
+                        col: spec
+                        for col, spec in self.schema.tables[name]["columns"].items()
+                        if spec.get("data_type")
+                    }
+                    if not columns:
+                        # No complete columns -> nothing was ever loaded and a
+                        # zero-column parquet is unwritable; nothing to empty.
+                        continue
+                    _truncate_table(
+                        api,
+                        self.config,
+                        managed_names[name],
+                        columns_to_arrow(columns, self.capabilities),
+                    )
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
 

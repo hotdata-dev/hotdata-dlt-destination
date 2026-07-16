@@ -11,6 +11,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `merge` loads honour dlt's `hard_delete` column hint: flagged rows are removed from the table by key (server `delete` mode) while the rest upsert, so a dlt pipeline can propagate deletes. Requires a `primary_key` (the same key the merge uses). Follows dlt's rule — a boolean hint column deletes on `True`, any other type deletes on non-null.
 
+
+## [0.9.4] - 2026-07-16
+
+### Fixed
+
+- Truncate now empties replace tables with a zero-row `mode="replace"` load instead of delete + re-declare. The API's delete-table endpoint tombstones the table — it disappears from listings but can never be re-declared (409) or loaded again (404) — so 0.9.3's truncate permanently broke every replace table it touched. **Do not use 0.9.3.**
+
+## [0.9.3] - 2026-07-16
+
+### Fixed
+
+- Multi-file replace data loss: tables split across multiple parquet files (e.g. under `DATA_WRITER__FILE_MAX_BYTES`) loaded every file with `mode="replace"`, so each file wiped the previous one and only the last file's rows survived. Replace-disposition tables are now truncated once per load package in `initialize_storage` (dlt's truncate-and-insert contract) and every file job loads with `mode="append"`.
+
+## [0.9.2] - 2026-07-15
+
+### Changed
+
+- Bumped `hotdata-framework` to 0.7.1, which streams large Parquet uploads one chunk at a time via the presigned session API instead of reading the entire file into memory. Eliminates the client-side OOM on large tables.
+
+## [0.9.1] - 2026-07-15
+
+### Added
+
+- `HotdataLoadJob.run()` now logs each Parquet file as it begins loading via dlt's logger: `load: <table> <- <file> (<N> rows)`. This makes the loading phase visible in dltHub stdout instead of being a silent gap between the "loading" stage transition and completion.
+
 ## [0.9.0] - 2026-07-15
 
 ### Changed

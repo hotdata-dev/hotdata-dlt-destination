@@ -43,6 +43,7 @@ class InMemoryBackend:
         self.tables: dict[tuple, pa.Table] = {}
         self.uploads: dict[str, pa.Table] = {}
         self.results: dict[str, pa.Table] = {}
+        self.load_counts: dict[tuple, int] = {}
         self._n = 0
 
     def close(self) -> None:
@@ -96,6 +97,7 @@ class InMemoryBackend:
 
         name = self.id_to_name.get(database, database)
         k = (name, schema, table)
+        self.load_counts[k] = self.load_counts.get(k, 0) + 1
         incoming = self.uploads[upload_id]
         existing = self.tables.get(k)
 
@@ -265,6 +267,42 @@ def test_load_replace_and_bookkeeping(backend, tmp_path):
     assert "_dlt_id" in rows[0] and "_dlt_load_id" in rows[0]
     assert backend.rows("e2e_basic", "_dlt_loads") is not None
     assert backend.rows("e2e_basic", "_dlt_version") is not None
+
+
+def test_replace_multi_file_pipeline_keeps_all_rows(backend, tmp_path, monkeypatch):
+    # Regression for multi-file replace data loss: with a small
+    # DATA_WRITER__FILE_MAX_BYTES (the ingest worker sets 200MB in production),
+    # dlt splits a replace table across several parquet files, one load job per
+    # file. Per-file mode="replace" left only the LAST file's rows; the fix
+    # truncates once at package init and appends every file.
+    monkeypatch.setenv("DATA_WRITER__FILE_MAX_BYTES", "256")
+    monkeypatch.setenv("DATA_WRITER__BUFFER_MAX_ITEMS", "10")
+
+    @dlt.resource(name="rows", write_disposition="replace")
+    def rows_v1():
+        yield from ({"id": i, "payload": "x" * 40} for i in range(100))
+
+    pipe = dlt.pipeline(
+        pipeline_name="p_multifile",
+        destination=_dest("e2e_multifile", ["rows"], "replace"),
+        dataset_name="public",
+        pipelines_dir=str(tmp_path),
+    )
+    pipe.run(rows_v1())
+
+    k = ("e2e_multifile", "public", "rows")
+    assert backend.load_counts.get(k, 0) >= 2, "table must span multiple files to exercise the bug"
+    loaded = backend.rows("e2e_multifile", "rows")
+    assert sorted(r["id"] for r in loaded) == list(range(100))
+
+    # A second run must still fully replace, not accumulate.
+    @dlt.resource(name="rows", write_disposition="replace")
+    def rows_v2():
+        yield from ({"id": i, "payload": "y" * 40} for i in range(100, 150))
+
+    pipe.run(rows_v2())
+    loaded = backend.rows("e2e_multifile", "rows")
+    assert sorted(r["id"] for r in loaded) == list(range(100, 150))
 
 
 def test_load_decimal_column(backend, tmp_path):
