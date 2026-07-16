@@ -86,12 +86,6 @@ class InMemoryBackend:
         self.keys[(name, schema, table)] = list(key or [])
         return SimpleNamespace(table=table, var_schema=schema, synced=False)
 
-    def delete_managed_table(self, database, table, *, schema="public"):
-        name = self.id_to_name.get(database, database)
-        self.declared.get(name, set()).discard(table)
-        self.tables.pop((name, schema, table), None)
-        self.keys.pop((name, schema, table), None)
-
     def upload_parquet(self, path):
         self._n += 1
         uid = f"up_{self._n}"

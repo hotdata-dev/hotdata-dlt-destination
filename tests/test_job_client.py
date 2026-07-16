@@ -51,9 +51,6 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
                 store[table] = self._pending
             return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
 
-        def truncate_managed_table(self, database, table, *, schema, key=None):
-            store.pop(table, None)
-
         def close(self) -> None:
             return None
 
@@ -151,14 +148,19 @@ def test_initialize_storage_truncates_replace_tables(monkeypatch) -> None:
     monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
     schema = Schema("events")
     schema.update_table(
-        {"name": "orders", "write_disposition": "replace", "columns": {}}
+        {
+            "name": "orders",
+            "write_disposition": "replace",
+            "columns": {"id": {"name": "id", "data_type": "bigint"}},
+        }
     )
     client = HotdataJobClient(schema, _config(), hotdata().capabilities())
 
     client.initialize_storage(truncate_tables=["orders", "_dlt_loads"])
 
-    # orders truncated (with no key -> None); internal dlt tables never truncated.
-    assert calls.get("truncated") == [("orders", None)]
+    # orders emptied via a zero-row replace load (the API's only truncate — the
+    # delete-table endpoint tombstones); internal dlt tables never truncated.
+    assert calls.get("loads") == [("orders", "replace", 0)]
 
 
 def test_load_job_merge_combines_with_existing(tmp_path, monkeypatch) -> None:
@@ -205,12 +207,12 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
         def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
             calls.setdefault("modes", []).append(mode)
             calls["mode"] = mode
+            calls.setdefault("loads", []).append(
+                (table, mode, self._pending.num_rows if self._pending is not None else None)
+            )
             if reject_mode is not None and mode == reject_mode:
                 raise HotdataTerminalError(f"{table}: no declared key; required for mode={mode}")
             return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
-
-        def truncate_managed_table(self, database, table, *, schema, key=None):
-            calls.setdefault("truncated", []).append((table, key))
 
         def close(self) -> None:
             return None
