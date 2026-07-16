@@ -389,6 +389,45 @@ def test_merge_dedup(backend, tmp_path):
     assert by_id == {1: "new", 2: "keep", 3: "added"}
 
 
+def test_merge_hard_delete(backend, tmp_path):
+    @dlt.resource(
+        name="users",
+        write_disposition="merge",
+        primary_key="id",
+        columns={"deleted": {"hard_delete": True}},
+    )
+    def users(batch):
+        yield batch
+
+    pipe = dlt.pipeline(
+        pipeline_name="p_hd",
+        destination=_dest("e2e_hd", ["users"], "merge"),
+        dataset_name="public",
+        pipelines_dir=str(tmp_path),
+    )
+    pipe.run(
+        users(
+            [
+                {"id": 1, "name": "a", "deleted": False},
+                {"id": 2, "name": "b", "deleted": False},
+                {"id": 3, "name": "c", "deleted": False},
+            ]
+        )
+    )
+    # update 1, delete 2 (flagged), leave 3 untouched
+    pipe.run(
+        users(
+            [
+                {"id": 1, "name": "a2", "deleted": False},
+                {"id": 2, "name": "b", "deleted": True},
+            ]
+        )
+    )
+
+    by_id = {r["id"]: r["name"] for r in backend.rows("e2e_hd", "users")}
+    assert by_id == {1: "a2", 3: "c"}  # 2 was deleted, 1 updated in place, 3 kept
+
+
 def _spans_pipeline(tmp_path):
     @dlt.resource(name="spans", write_disposition="replace")
     def spans():

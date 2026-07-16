@@ -46,9 +46,11 @@ from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransien
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 from hotdata_dlt_destination.merge import (
     combine_tables,
+    resolve_hard_delete_column,
     resolve_merge_strategy,
     resolve_primary_key,
     resolve_write_disposition,
+    split_hard_delete,
 )
 from hotdata_dlt_destination.parquet import write_table_parquet
 
@@ -201,6 +203,17 @@ class HotdataLoadJob(RunnableLoadJob):
             f"{batch_table.num_rows:,}",
         )
 
+        # dlt marks rows to remove (rather than upsert) via a hard_delete column.
+        hard_delete_column = resolve_hard_delete_column(self._table_schema)
+        if hard_delete_column is not None and hard_delete_column not in batch_table.column_names:
+            hard_delete_column = None
+        if hard_delete_column is not None and primary_key and hard_delete_column in primary_key:
+            # A key column can't double as the delete flag — the delete would then
+            # project the flag itself as the key. Fail fast rather than corrupt it.
+            raise DestinationTerminalException(
+                f"hard_delete column {hard_delete_column!r} cannot also be a primary key column"
+            )
+
         # Declare every table's key (mirrors initialize_storage). `_schema` is
         # set by the loader before run(); fall back to just this table if not.
         schema = getattr(self, "_schema", None)
@@ -225,7 +238,9 @@ class HotdataLoadJob(RunnableLoadJob):
                     mode=mode,
                 )
 
-        def _combine_and_replace(api: HotdataClient, combine_disposition: str) -> None:
+        def _combine_and_replace(
+            api: HotdataClient, combine_disposition: str, *, apply_hard_delete: bool = False
+        ) -> None:
             existing = api.fetch_table(
                 database=contract.database_name,
                 schema=contract.schema,
@@ -237,6 +252,7 @@ class HotdataLoadJob(RunnableLoadJob):
                 incoming=batch_table,
                 primary_key=primary_key,
                 fallback_key="_dlt_id",
+                hard_delete_column=hard_delete_column if apply_hard_delete else None,
             )
             _apply(api, combined, "replace")
 
@@ -263,19 +279,48 @@ class HotdataLoadJob(RunnableLoadJob):
                     _apply(api, batch_table, "append")
                 elif disposition in ("merge", "upsert") and primary_key and not is_insert_only:
                     try:
-                        _apply(api, batch_table, "upsert")
+                        if hard_delete_column is None:
+                            _apply(api, batch_table, "upsert")
+                        else:
+                            # Split the batch: upsert the live rows, delete the
+                            # flagged rows by key (delete carries key columns only).
+                            # NB: two separate loads, not atomic — a terminal
+                            # failure between them can leave a partial state.
+                            to_upsert, to_delete = split_hard_delete(
+                                batch_table, hard_delete_column
+                            )
+                            if to_upsert.num_rows == 0:
+                                # All rows are deletes: no upsert to initialise the
+                                # table, so a native delete could hit a never-loaded
+                                # table (500). Route through combine + replace, which
+                                # handles empty (creates it empty) and populated (drops
+                                # the keys) alike.
+                                _combine_and_replace(api, "merge", apply_hard_delete=True)
+                            else:
+                                _apply(api, to_upsert, "upsert")
+                                if to_delete.num_rows:
+                                    _apply(api, to_delete.select(primary_key), "delete")
                     except HotdataTerminalError as exc:
-                        # Pre-key-support tables reject upsert (no declared key)
-                        # -> fall back to the combine + replace path.
+                        # Pre-key-support tables reject upsert/delete (no declared
+                        # key) -> fall back to the combine + replace path.
                         if not _is_missing_key_error(exc):
                             raise
-                        _combine_and_replace(api, "merge")
+                        _combine_and_replace(api, "merge", apply_hard_delete=True)
                 else:
-                    _combine_and_replace(api, "insert-only" if is_insert_only else disposition)
+                    # Keyless merge / insert-only: combine client-side, dropping any
+                    # hard-delete-flagged rows so a tombstone never lands as live data.
+                    _combine_and_replace(
+                        api,
+                        "insert-only" if is_insert_only else disposition,
+                        apply_hard_delete=hard_delete_column is not None,
+                    )
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
         except HotdataTransientError as exc:
             raise DestinationTransientException(str(exc)) from exc
+        except ValueError as exc:
+            # e.g. a null value in a key column surfaced by the client-side combine.
+            raise DestinationTerminalException(str(exc)) from exc
 
 
 class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):

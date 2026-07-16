@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from dlt.common.schema import TTableSchema
 
 SUPPORTED_WRITE_DISPOSITIONS = frozenset({"replace", "append", "merge", "upsert", "insert-only"})
@@ -38,6 +39,33 @@ def resolve_merge_strategy(table: TTableSchema) -> str | None:
     if not name:
         return None
     return get_merge_strategy({name: table}, name)
+
+
+def resolve_hard_delete_column(table: TTableSchema) -> str | None:
+    """The column dlt marks with the ``hard_delete`` hint, or None.
+
+    On a merge load, rows flagged in this column are deletes rather than upserts.
+    """
+    if not table.get("columns"):
+        return None
+    from dlt.common.schema.utils import get_first_column_name_with_prop
+
+    return get_first_column_name_with_prop(table, "hard_delete")
+
+
+def _hard_delete_mask(table: pa.Table, column: str) -> pa.ChunkedArray:
+    # dlt's rule: a bool hard-delete column deletes the row on True; a column of
+    # any other type deletes on NOT NULL. A null in a bool column is not a delete.
+    col = table.column(column)
+    if pa.types.is_boolean(col.type):
+        return pc.fill_null(pc.equal(col, pa.scalar(True)), False)
+    return pc.is_valid(col)
+
+
+def split_hard_delete(table: pa.Table, column: str) -> tuple[pa.Table, pa.Table]:
+    """Split ``table`` into (rows to upsert, rows to delete) by the hard-delete column."""
+    deleted = _hard_delete_mask(table, column)
+    return table.filter(pc.invert(deleted)), table.filter(deleted)
 
 
 def row_key(row: dict[str, Any], keys: list[str]) -> tuple[Any, ...]:
@@ -96,14 +124,19 @@ def combine_tables(
     incoming: pa.Table,
     primary_key: list[str] | None,
     fallback_key: str = "_dlt_id",
+    hard_delete_column: str | None = None,
 ) -> pa.Table:
     """Arrow-native combine: avoids dict round-trip for replace and append.
 
     ``fallback_key`` is the row-identity column used for merge/upsert/insert-only
     when no ``primary_key`` is declared. dlt's ``_dlt_id`` is preserved on every
-    row, so it is the default.
+    row, so it is the default. ``hard_delete_column`` (merge only) marks rows to
+    remove by key instead of upsert — used on the client-side fallback path.
     """
     if disposition == "replace" or existing is None or len(existing) == 0:
+        if hard_delete_column is not None and hard_delete_column in incoming.column_names:
+            # No existing rows to delete; keep only the non-deleted incoming rows.
+            return split_hard_delete(incoming, hard_delete_column)[0]
         return incoming
     # normalise Arrow string encodings so the two sides concat/unify
     existing = _string_view_to_string(existing)
@@ -114,7 +147,13 @@ def combine_tables(
         return pa.concat_tables([existing, incoming], promote_options="permissive")
     keys = primary_key or [fallback_key]
     if disposition in ("merge", "upsert"):
-        merged = merge_rows(existing.to_pylist(), incoming.to_pylist(), primary_key=keys)
+        if hard_delete_column is not None and hard_delete_column in incoming.column_names:
+            to_upsert, to_delete = split_hard_delete(incoming, hard_delete_column)
+            deleted_keys = {row_key(r, keys) for r in to_delete.to_pylist()}
+            merged = merge_rows(existing.to_pylist(), to_upsert.to_pylist(), primary_key=keys)
+            merged = [r for r in merged if row_key(r, keys) not in deleted_keys]
+        else:
+            merged = merge_rows(existing.to_pylist(), incoming.to_pylist(), primary_key=keys)
         # Build with the unified schema of both inputs. A bare ``pa.Table.from_pylist``
         # infers the schema from the first row's keys and values, which silently drops
         # incoming-only columns (existing rows sort first and lack them) and re-infers
@@ -126,6 +165,9 @@ def combine_tables(
         )
         return pa.Table.from_pylist(merged, schema=schema)
     if disposition == "insert-only":
+        if hard_delete_column is not None and hard_delete_column in incoming.column_names:
+            # hard-delete-flagged rows are never inserted (mirrors dlt's not_deleted filter).
+            incoming = split_hard_delete(incoming, hard_delete_column)[0]
         existing_keys = {row_key(row, keys) for row in existing.to_pylist()}
         new_rows = [r for r in incoming.to_pylist() if row_key(r, keys) not in existing_keys]
         if not new_rows:
