@@ -241,6 +241,8 @@ class HotdataLoadJob(RunnableLoadJob):
                         else:
                             # Split the batch: upsert the live rows, delete the
                             # flagged rows by key (delete carries key columns only).
+                            # NB: two separate loads, not atomic — a terminal
+                            # failure between them can leave a partial state.
                             to_upsert, to_delete = split_hard_delete(
                                 batch_table, hard_delete_column
                             )
@@ -255,11 +257,20 @@ class HotdataLoadJob(RunnableLoadJob):
                             raise
                         _combine_and_replace(api, "merge", apply_hard_delete=True)
                 else:
-                    _combine_and_replace(api, "insert-only" if is_insert_only else disposition)
+                    # Keyless merge / insert-only: combine client-side, dropping any
+                    # hard-delete-flagged rows so a tombstone never lands as live data.
+                    _combine_and_replace(
+                        api,
+                        "insert-only" if is_insert_only else disposition,
+                        apply_hard_delete=hard_delete_column is not None,
+                    )
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
         except HotdataTransientError as exc:
             raise DestinationTransientException(str(exc)) from exc
+        except ValueError as exc:
+            # e.g. a null value in a key column surfaced by the client-side combine.
+            raise DestinationTerminalException(str(exc)) from exc
 
 
 class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):

@@ -165,6 +165,9 @@ def combine_tables(
         )
         return pa.Table.from_pylist(merged, schema=schema)
     if disposition == "insert-only":
+        if hard_delete_column is not None and hard_delete_column in incoming.column_names:
+            # hard-delete-flagged rows are never inserted (mirrors dlt's not_deleted filter).
+            incoming = split_hard_delete(incoming, hard_delete_column)[0]
         existing_keys = {row_key(row, keys) for row in existing.to_pylist()}
         new_rows = [r for r in incoming.to_pylist() if row_key(r, keys) not in existing_keys]
         if not new_rows:

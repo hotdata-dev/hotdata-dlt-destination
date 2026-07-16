@@ -261,6 +261,95 @@ def test_merge_hard_delete_splits_upsert_and_delete(tmp_path, monkeypatch) -> No
     assert calls.get("fetches", 0) == 0  # native path, no read-modify-write
 
 
+def _hd_table(*, strategy: str | None = None, keyed: bool = True, flag: str = "deleted") -> dict:
+    cols: dict = {flag: {"name": flag, "data_type": "bool", "hard_delete": True}}
+    if keyed:
+        cols["id"] = {"name": "id", "data_type": "bigint", "primary_key": True}
+    table: dict = {"name": "orders", "write_disposition": "merge", "columns": cols}
+    if strategy:
+        table["x-merge-strategy"] = strategy
+    return table
+
+
+def test_insert_only_hard_delete_excludes_flagged_rows(tmp_path, monkeypatch) -> None:
+    # insert-only + hard_delete: a flagged row must NOT be inserted as live data.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(
+        tmp_path,
+        [{"id": 1, "_dlt_id": "x", "deleted": False}, {"id": 2, "_dlt_id": "y", "deleted": True}],
+    )
+    HotdataLoadJob(path, _config(), _hd_table(strategy="insert-only")).run()
+    assert calls["modes"] == ["replace"]  # insert-only -> client combine + replace
+    assert [r["id"] for r in dict(calls["uploads"])["replace"]] == [1]  # id=2 not written
+
+
+def test_keyless_merge_hard_delete_excludes_flagged_rows(tmp_path, monkeypatch) -> None:
+    # merge with no primary_key + hard_delete: a flagged row must not land as live data.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(
+        tmp_path,
+        [{"id": 1, "_dlt_id": "x", "deleted": False}, {"id": 2, "_dlt_id": "y", "deleted": True}],
+    )
+    HotdataLoadJob(path, _config(), _hd_table(keyed=False)).run()
+    assert calls["modes"] == ["replace"]
+    assert [r["id"] for r in dict(calls["uploads"])["replace"]] == [1]  # id=2 not written
+
+
+def test_merge_hard_delete_all_flagged_only_deletes(tmp_path, monkeypatch) -> None:
+    # Every row flagged -> a delete load only, no upsert.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(
+        tmp_path,
+        [{"id": 1, "_dlt_id": "x", "deleted": True}, {"id": 2, "_dlt_id": "y", "deleted": True}],
+    )
+    HotdataLoadJob(path, _config(), _hd_table()).run()
+    assert calls["modes"] == ["delete"]
+    assert [r["id"] for r in dict(calls["uploads"])["delete"]] == [1, 2]
+
+
+def test_merge_hard_delete_non_bool_deletes_on_not_null(tmp_path, monkeypatch) -> None:
+    # A non-bool hard_delete column (e.g. deleted_at) deletes on NOT NULL.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    path = _write_parquet(
+        tmp_path,
+        [
+            {"id": 1, "_dlt_id": "x", "deleted_at": None},
+            {"id": 2, "_dlt_id": "y", "deleted_at": "2026-01-01"},
+        ],
+    )
+    table = {
+        "name": "orders",
+        "write_disposition": "merge",
+        "columns": {
+            "id": {"name": "id", "data_type": "bigint", "primary_key": True},
+            "deleted_at": {"name": "deleted_at", "data_type": "text", "hard_delete": True},
+        },
+    }
+    HotdataLoadJob(path, _config(), table).run()
+    assert calls["modes"] == ["upsert", "delete"]
+    uploads = dict(calls["uploads"])
+    assert [r["id"] for r in uploads["upsert"]] == [1]  # null deleted_at -> live
+    assert [r["id"] for r in uploads["delete"]] == [2]  # non-null deleted_at -> delete
+
+
+def test_hard_delete_fallback_on_missing_server_key_excludes_flagged(tmp_path, monkeypatch) -> None:
+    # Server rejects upsert (no declared key) -> combine + replace fallback that
+    # still drops the hard-delete-flagged rows.
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls, reject_mode="upsert"))
+    path = _write_parquet(
+        tmp_path,
+        [{"id": 1, "_dlt_id": "x", "deleted": False}, {"id": 2, "_dlt_id": "y", "deleted": True}],
+    )
+    HotdataLoadJob(path, _config(), _hd_table()).run()  # must not raise
+    assert calls["modes"] == ["upsert", "replace"]  # native upsert rejected -> fallback
+    assert [r["id"] for r in dict(calls["uploads"])["replace"]] == [1]  # id=2 not written
+
+
 # --- state sync ---
 
 
