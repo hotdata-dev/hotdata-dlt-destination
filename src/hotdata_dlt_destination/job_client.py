@@ -118,6 +118,33 @@ def _temp_parquet() -> Iterator[str]:
             os.unlink(path)
 
 
+def _truncate_table(
+    api: HotdataClient,
+    config: HotdataClientConfiguration,
+    table_name: str,
+    arrow_schema: Any,
+) -> None:
+    """Empty a managed table via a zero-row replace load.
+
+    This is the only truncate the API offers: the delete-table endpoint
+    TOMBSTONES the table — it disappears from listings but can never be
+    re-declared (add returns 409) or loaded (404 "was it deleted?"), so
+    delete + re-add is not usable. A replace load of an empty parquet with
+    the table's schema empties the contents in place and leaves the table
+    ready for appends.
+    """
+    with _temp_parquet() as parquet_path:
+        write_table_parquet(arrow_schema.empty_table(), parquet_path)
+        upload_id = api.upload_parquet(parquet_path)
+        api.load_managed_table(
+            config.database_name,
+            table_name,
+            schema=config.schema,
+            upload_id=upload_id,
+            mode="replace",
+        )
+
+
 def _upload_table(
     api: HotdataClient,
     config: HotdataClientConfiguration,
@@ -326,15 +353,25 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                 # Emptying them here lets every file job load with mode="append",
                 # so tables split across multiple parquet files keep all files —
                 # a per-file "replace" would leave only the last file's rows.
+                from dlt.common.libs.pyarrow import columns_to_arrow
+
                 for name in sorted(set(truncate_tables or ())):
-                    if _is_internal_table(name):
+                    if _is_internal_table(name) or name not in self.schema.tables:
                         continue
-                    managed = managed_names.get(name, name)
-                    api.truncate_managed_table(
-                        self.config.database_name,
-                        managed,
-                        schema=self.config.schema,
-                        key=keys.get(managed),
+                    columns = {
+                        col: spec
+                        for col, spec in self.schema.tables[name]["columns"].items()
+                        if spec.get("data_type")
+                    }
+                    if not columns:
+                        # No complete columns -> nothing was ever loaded and a
+                        # zero-column parquet is unwritable; nothing to empty.
+                        continue
+                    _truncate_table(
+                        api,
+                        self.config,
+                        managed_names[name],
+                        columns_to_arrow(columns, self.capabilities),
                     )
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [0.9.4] - 2026-07-16
+
+### Fixed
+
+- Truncate now empties replace tables with a zero-row `mode="replace"` load instead of delete + re-declare. The API's delete-table endpoint tombstones the table — it disappears from listings but can never be re-declared (409) or loaded again (404) — so 0.9.3's truncate permanently broke every replace table it touched. **Do not use 0.9.3.**
+
 ## [0.9.3] - 2026-07-16
 
 ### Fixed

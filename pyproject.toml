@@ -1,6 +1,6 @@
 [project]
 name = "hotdata-dlt-destination"
-version = "0.9.3"
+version = "0.9.4"
 description = "dlt destination for loading data into Hotdata managed databases."
 readme = "README.md"
 license = "MIT"

@@ -66,40 +66,6 @@ def test_upload_and_load_managed_table() -> None:
     client.close()
 
 
-def test_truncate_managed_table_deletes_then_redeclares_with_key() -> None:
-    class FakeRuntime:
-        def __init__(self) -> None:
-            self.calls: list[tuple] = []
-
-        def delete_managed_table(self, database: str, table: str, *, schema: str) -> None:
-            self.calls.append(("delete", database, table, schema))
-
-        def add_managed_table(self, database: str, table: str, *, schema: str, key=None):
-            self.calls.append(("add", database, table, schema, key))
-            return SimpleNamespace(table=table, var_schema=schema, synced=False)
-
-        def close(self) -> None:
-            return None
-
-    client = HotdataClient(
-        api_key="k",
-        workspace_id="ws_1",
-        api_base_url="https://api.hotdata.dev",
-        max_retries=1,
-        retry_backoff_seconds=0.0,
-    )
-    fake_runtime = FakeRuntime()
-    client._runtime = fake_runtime
-
-    client.truncate_managed_table("dlt", "orders", schema="public", key=["id"])
-
-    assert fake_runtime.calls == [
-        ("delete", "dlt", "orders", "public"),
-        ("add", "dlt", "orders", "public", ["id"]),
-    ]
-    client.close()
-
-
 def test_fetch_table_rows_skips_unsynced_tables() -> None:
     class FakeRuntime:
         def list_managed_tables(self, database: str, *, schema: str):

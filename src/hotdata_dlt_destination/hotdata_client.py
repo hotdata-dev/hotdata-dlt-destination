@@ -66,23 +66,6 @@ class HotdataClient(ManagedDatabaseClient):
             lambda: runtime.add_managed_table(name, table, schema=schema, key=key)
         )
 
-    def truncate_managed_table(
-        self, name: str, table: str, *, schema: str, key: list[str] | None = None
-    ) -> None:
-        """Empty a managed table in place, preserving its declared key.
-
-        The API has no native truncate, so this drops the table and re-declares
-        it. Delete and re-add retry independently: a combined retry could rerun
-        the delete after it already succeeded and fail terminally on the missing
-        table. If the re-add is lost to a crash in between,
-        ``ensure_managed_database`` re-declares the table on the next run.
-        """
-        runtime = self._runtime
-        self._request_with_retry(
-            lambda: runtime.delete_managed_table(name, table, schema=schema)
-        )
-        self._add_managed_table(name, table, schema=schema, key=key)
-
     def drop_managed_database(self, name: str) -> None:
         """Delete the managed database if it exists (used for dlt dev_mode / refresh)."""
         runtime = self._runtime
