@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [0.9.5] - 2026-07-16
+
+### Changed
+
+- Raised the `hotdata-framework` floor to 0.7.3 so the destination can never be paired with the pre-streaming upload path: 0.7.3 streams parquet uploads with concurrent parts under a bounded memory budget. No code changes.
+
 ## [0.9.4] - 2026-07-16
 
 ### Fixed
