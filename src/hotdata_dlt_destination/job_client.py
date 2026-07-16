@@ -207,6 +207,12 @@ class HotdataLoadJob(RunnableLoadJob):
         hard_delete_column = resolve_hard_delete_column(self._table_schema)
         if hard_delete_column is not None and hard_delete_column not in batch_table.column_names:
             hard_delete_column = None
+        if hard_delete_column is not None and primary_key and hard_delete_column in primary_key:
+            # A key column can't double as the delete flag — the delete would then
+            # project the flag itself as the key. Fail fast rather than corrupt it.
+            raise DestinationTerminalException(
+                f"hard_delete column {hard_delete_column!r} cannot also be a primary key column"
+            )
 
         # Declare every table's key (mirrors initialize_storage). `_schema` is
         # set by the loader before run(); fall back to just this table if not.
@@ -283,10 +289,17 @@ class HotdataLoadJob(RunnableLoadJob):
                             to_upsert, to_delete = split_hard_delete(
                                 batch_table, hard_delete_column
                             )
-                            if to_upsert.num_rows:
+                            if to_upsert.num_rows == 0:
+                                # All rows are deletes: no upsert to initialise the
+                                # table, so a native delete could hit a never-loaded
+                                # table (500). Route through combine + replace, which
+                                # handles empty (creates it empty) and populated (drops
+                                # the keys) alike.
+                                _combine_and_replace(api, "merge", apply_hard_delete=True)
+                            else:
                                 _apply(api, to_upsert, "upsert")
-                            if to_delete.num_rows:
-                                _apply(api, to_delete.select(primary_key), "delete")
+                                if to_delete.num_rows:
+                                    _apply(api, to_delete.select(primary_key), "delete")
                     except HotdataTerminalError as exc:
                         # Pre-key-support tables reject upsert/delete (no declared
                         # key) -> fall back to the combine + replace path.
