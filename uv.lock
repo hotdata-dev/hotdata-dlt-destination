@@ -306,7 +306,7 @@ wheels = [
 
 [[package]]
 name = "hotdata"
-version = "0.7.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
@@ -314,9 +314,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/30/08681132e019f6c9ddb566dc38be6a302763c4b4848b2d97e3d7ace8d257/hotdata-0.7.0.tar.gz", hash = "sha256:ef4484a74c0f33ee543b0a0dbfb5a6c04e7b5812b277f42a6448000d41c2405d", size = 215130, upload-time = "2026-07-14T12:21:33.936Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/38/30ed3d1d99413e7684672fa424baef85a347db465b90c774443320cf1cea/hotdata-0.8.0.tar.gz", hash = "sha256:cdac515ffa193ed028491e4b7abcd1b6404d4e3f96986c9c0a2b2f407db42eb6", size = 216848, upload-time = "2026-07-20T06:30:37.659Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dc/ef/6c4236640629688074892759b1a7593c08f30e9d916b6951c2bbfec19d7f/hotdata-0.7.0-py3-none-any.whl", hash = "sha256:d9e3008e3084d22bcc27b7bf1d08d8c2c255fe3726c252c777bb614a3cae0576", size = 314103, upload-time = "2026-07-14T12:21:32.154Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/0f/f2ccaeb0f910c3f8cd84a911d934704277f0d6e5a20f8b49cf0eedb2a8aa/hotdata-0.8.0-py3-none-any.whl", hash = "sha256:5d64bfc185a0e7e2bf34ebdcea50787d3418fb250dacc53e00dc74d64e99f753", size = 316923, upload-time = "2026-07-20T06:30:35.778Z" },
 ]
 
 [[package]]
@@ -349,8 +349,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "dlt", specifier = ">=1.28.1,<1.29" },
-    { name = "hotdata", specifier = ">=0.7.0,<0.8" },
-    { name = "hotdata-framework", specifier = ">=0.7.3,<0.8" },
+    { name = "hotdata", specifier = ">=0.8.0,<0.9" },
+    { name = "hotdata-framework", specifier = ">=0.8.0,<0.9" },
     { name = "hotdata-ibis", marker = "extra == 'ibis'", specifier = ">=0.3.1,<0.4" },
     { name = "ibis-framework", marker = "extra == 'ibis'", specifier = ">=12,<13" },
     { name = "pandas", specifier = ">=2.0" },
@@ -369,21 +369,21 @@ dev = [
 
 [[package]]
 name = "hotdata-framework"
-version = "0.7.3"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hotdata" },
     { name = "pandas" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d4/3b/8c26da8e1cdc889f33896ecb6ebedf51632780b49ec83190cb26a9bab2ac/hotdata_framework-0.7.3.tar.gz", hash = "sha256:9b17b2066e939c5e741ccd812385bb16769a6361a06f44216641dba845310112", size = 100567, upload-time = "2026-07-16T05:28:18.224Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/24/879cbc596520023d1757eef8fd73b482404fb98e98d48a19571e8932bec2/hotdata_framework-0.8.0.tar.gz", hash = "sha256:057ebe8818298f1e8b4ef4250a4f4266514c7b51f3a4eb79425a1548885348ce", size = 100984, upload-time = "2026-07-20T07:04:50.175Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/49/2e8b7b97f53a46f9de0c5f5b7a5533e3820a6bb7f1d8c040f35b69594709/hotdata_framework-0.7.3-py3-none-any.whl", hash = "sha256:73825e95fc86a5faea7e03c8bf364cae2da1344de299f23acface5e9633413c2", size = 16198, upload-time = "2026-07-16T05:28:16.926Z" },
+    { url = "https://files.pythonhosted.org/packages/98/cd/c5078d826a2240e6d7c6ef5f558280772ee189991af15d0332fd11c5a67c/hotdata_framework-0.8.0-py3-none-any.whl", hash = "sha256:6ba899e9015b71945bf56df873c0486382d4f11763a57afc423338bd68abb30a", size = 16330, upload-time = "2026-07-20T07:04:49.089Z" },
 ]
 
 [[package]]
 name = "hotdata-ibis"
-version = "0.3.1"
+version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hotdata" },
@@ -393,9 +393,9 @@ dependencies = [
     { name = "pyarrow-hotfix" },
     { name = "sqlglot" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/04/a6/af016a2d1285e4aec42e9b582796436b3bce05d10cd4287bcabb384afe85/hotdata_ibis-0.3.1.tar.gz", hash = "sha256:4d6dc70b7cafae6aaa5202d2e00a6ee8d7e6b491a69660974fa985021eba05cf", size = 25458, upload-time = "2026-07-15T05:58:20.381Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8e/65/4e2dbd1b3b64601ac3e4b5c18848a30961295d06bec0a7ed93e40748183f/hotdata_ibis-0.3.2.tar.gz", hash = "sha256:cee59a3d40c8853ac065171a193a3bc6fff8c0ac55b1b361186b4360943f3931", size = 25498, upload-time = "2026-07-20T14:07:10.363Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/4c/082118394712006dc14bedb36bfa43511194c6b6decc2fdedf726bb9a2d8/hotdata_ibis-0.3.1-py3-none-any.whl", hash = "sha256:92fba5fb194ae0f78eeccb731872cb81e9385ae0298655ab2074063f03eff93a", size = 17980, upload-time = "2026-07-15T05:58:19.288Z" },
+    { url = "https://files.pythonhosted.org/packages/67/0c/a3480f8587b56147dc9dcf370c6bcaeaabc43cb4cbe90b1bb20183607378/hotdata_ibis-0.3.2-py3-none-any.whl", hash = "sha256:bad64fa36bcd2af5aea0d0b6fd7bc99a61f39294a2afc8c0bfa873c486e5b5d9", size = 17981, upload-time = "2026-07-20T14:07:09.097Z" },
 ]
 
 [[package]]
