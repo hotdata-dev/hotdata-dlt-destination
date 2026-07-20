@@ -236,6 +236,12 @@ class HotdataLoadJob(RunnableLoadJob):
                     schema=contract.schema,
                     upload_id=upload_id,
                     mode=mode,
+                    # Send the resolved key per-load so keyed modes match on it
+                    # even if the table wasn't declared with a key (the server
+                    # ignores it for replace/append). The create-time declaration
+                    # is still kept (see ensure_managed_database) for future
+                    # key-clustering/pruning.
+                    key=primary_key,
                 )
 
         def _combine_and_replace(

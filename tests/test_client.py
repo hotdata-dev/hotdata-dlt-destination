@@ -24,6 +24,7 @@ def test_upload_and_load_managed_table() -> None:
             schema: str,
             upload_id: str,
             mode: str = "replace",
+            key: list[str] | None = None,
         ) -> SimpleNamespace:
             self.load_calls += 1
             assert database == "dlt"
@@ -355,7 +356,7 @@ class _EvoRuntime:
         self.uploaded.append(path)
         return "up_1"
 
-    def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
+    def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
         self.loaded.append((database, table, schema, upload_id))
         return SimpleNamespace()
 

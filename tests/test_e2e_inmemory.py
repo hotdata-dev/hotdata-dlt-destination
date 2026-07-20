@@ -92,7 +92,7 @@ class InMemoryBackend:
         self.uploads[uid] = pq.read_table(path)
         return uid
 
-    def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
+    def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
         import pyarrow as _pa
 
         name = self.id_to_name.get(database, database)

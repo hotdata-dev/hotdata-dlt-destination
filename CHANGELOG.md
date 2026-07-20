@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Keyed loads (`delete`/`update`/`upsert`) now send the resolved `primary_key`
+  as a per-load key on each load, so the merge matches on it even when the table
+  wasn't created with a declared key. The create-time key declaration is kept
+  (for future key-clustering/pruning). Requires `hotdata-framework>=0.8.0`.
+
 ### Added
 
 - `merge` loads honour dlt's `hard_delete` column hint: flagged rows are removed from the table by key (server `delete` mode) while the rest upsert, so a dlt pipeline can propagate deletes. Requires a `primary_key` (the same key the merge uses). Follows dlt's rule — a boolean hint column deletes on `True`, any other type deletes on non-null.

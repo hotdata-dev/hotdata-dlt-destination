@@ -41,7 +41,7 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
             self._pending = pq.read_table(path)
             return "upload_1"
 
-        def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
+        def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
             assert self._pending is not None
             # Mode-faithful, like the server: append accumulates, replace overwrites.
             existing = store.get(table)
@@ -206,9 +206,11 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
             self._pending = pq.read_table(path)
             return "upload_1"
 
-        def load_managed_table(self, database, table, *, schema, upload_id, mode="replace"):
+        def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
             calls.setdefault("modes", []).append(mode)
             calls["mode"] = mode
+            calls["load_key"] = key
+            calls.setdefault("load_keys", []).append(key)
             pending = self._pending.to_pylist() if self._pending is not None else None
             calls.setdefault("uploads", []).append((mode, pending))
             calls.setdefault("loads", []).append(
@@ -237,6 +239,8 @@ def test_merge_with_key_uses_native_upsert_no_rmw(tmp_path, monkeypatch) -> None
     assert calls["mode"] == "upsert"
     assert calls.get("fetches", 0) == 0
     assert calls["keys"] == {"orders": ["id"]}
+    # The per-load key is sent on the upsert (matches even without a declared key).
+    assert calls["load_key"] == ["id"]
 
 
 def test_append_uses_native_append_no_rmw(tmp_path, monkeypatch) -> None:
