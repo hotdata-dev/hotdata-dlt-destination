@@ -15,12 +15,11 @@ dependencies = [
     # the minor. The SDKs move fast too (QueryResult / query-path surface), so
     # cap those to the current minor as well. See docs/sql-client-spec.md §11.
     "dlt>=1.28.1,<1.29",
-    # TODO(release): set the exact floors once the key-capable client + the SDK
-    # carrying mode/key are cut. Native delete/update/upsert require the `key`
-    # field on the managed-table decls (client) and create_managed_database(keys=)
-    # / add_managed_table(key=) / load_managed_table(mode=) (framework).
-    "hotdata>=0.7.0,<0.8",
-    "hotdata-framework>=0.7.3,<0.8",
+    # Native delete/update/upsert require the `key` field on the managed-table
+    # decls (hotdata 0.8.0) and the per-load `key` on load_managed_table plus
+    # create_managed_database(keys=) / add_managed_table(key=) (framework 0.8.0).
+    "hotdata>=0.8.0,<0.9",
+    "hotdata-framework>=0.8.0,<0.9",
     "pandas>=2.0",
     "pyarrow>=14",
 ]
