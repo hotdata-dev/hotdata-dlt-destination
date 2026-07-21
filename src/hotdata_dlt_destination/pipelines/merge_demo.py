@@ -1,0 +1,102 @@
+"""
+Composite-key merge + hard_delete demo pipeline.
+
+Loads a small ``orders`` table into a Hotdata managed database in two runs to
+show off native merge/upsert by a composite key and dlt's ``hard_delete`` hint:
+
+  - load 1 (append): seeds a brand-new table with no declared key.
+  - load 2 (merge, primary_key=["region", "order_id"]): updates three orders,
+    inserts one, and hard-deletes one -- matched by the per-load composite key,
+    even though the table was never created with a key.
+
+The merge key rides each load (resolved from the resource's ``primary_key``), so
+no key is declared when the table is created. Rows flagged in the ``deleted``
+column (dlt's ``hard_delete`` hint) are removed by key; every other row upserts.
+
+Environment:
+    HOTDATA_API_KEY    -- Hotdata API key
+    HOTDATA_WORKSPACE  -- Hotdata workspace ID
+"""
+
+from __future__ import annotations
+
+import os
+
+import dlt
+
+from hotdata_dlt_destination import hotdata
+from hotdata_dlt_destination.configuration import HotdataCredentials
+
+DATABASE = "example_orders"
+SCHEMA = "public"
+
+
+@dlt.resource(name="orders", write_disposition="append")
+def orders_seed():
+    """Seed 5 orders across 3 regions into a brand-new (keyless) table.
+
+    ``deleted`` is included here only so the hard_delete column exists on the
+    table before the merge load references it.
+    """
+    yield [
+        {"region": "us", "order_id": 1, "customer": "Alice", "amount": 100, "status": "pending", "deleted": False},
+        {"region": "us", "order_id": 2, "customer": "Bob", "amount": 50, "status": "pending", "deleted": False},
+        {"region": "eu", "order_id": 1, "customer": "Carla", "amount": 200, "status": "pending", "deleted": False},
+        {"region": "eu", "order_id": 2, "customer": "Dan", "amount": 75, "status": "shipped", "deleted": False},
+        {"region": "apac", "order_id": 1, "customer": "Emi", "amount": 300, "status": "pending", "deleted": False},
+    ]
+
+
+@dlt.resource(
+    name="orders",
+    write_disposition="merge",
+    primary_key=["region", "order_id"],
+    columns={"deleted": {"hard_delete": True}},
+)
+def orders_changes():
+    """Merge by the composite key: update 3 orders, insert 1, hard-delete 1.
+
+    Kept rows omit ``deleted`` (a boolean hard_delete column deletes only on
+    ``True``); only the deleted row sets it.
+    """
+    yield [
+        {"region": "us", "order_id": 1, "customer": "Alice", "amount": 100, "status": "shipped"},
+        {"region": "eu", "order_id": 1, "customer": "Carla", "amount": 220, "status": "paid"},
+        {"region": "eu", "order_id": 2, "customer": "Dan", "amount": 75, "status": "delivered"},
+        {"region": "us", "order_id": 3, "customer": "Frank", "amount": 40, "status": "pending"},
+        {"region": "apac", "order_id": 1, "customer": "Emi", "amount": 300, "status": "pending", "deleted": True},
+    ]
+
+
+def _print_table(pipeline: dlt.Pipeline, label: str) -> None:
+    df = pipeline.dataset().table("orders").df()
+    df = df[["region", "order_id", "customer", "amount", "status"]].sort_values(["region", "order_id"])
+    print(f"\n== {label} ({len(df)} rows) ==")
+    print(df.to_string(index=False))
+
+
+def main() -> None:
+    pipeline = dlt.pipeline(
+        pipeline_name="orders_merge",
+        destination=hotdata(
+            credentials=HotdataCredentials(
+                api_key=os.environ["HOTDATA_API_KEY"],
+                workspace_id=os.environ["HOTDATA_WORKSPACE"],
+            ),
+            declared_tables=["orders"],
+            database_name=DATABASE,
+            schema=SCHEMA,
+            create_database_if_missing=True,
+        ),
+        dataset_name=SCHEMA,
+    )
+
+    print(pipeline.run(orders_seed()))
+    _print_table(pipeline, "after load 1 (append, keyless)")
+
+    print(pipeline.run(orders_changes()))
+    _print_table(pipeline, "after load 2 (merge by [region, order_id] + hard_delete)")
+
+
+if __name__ == "__main__":
+    main()

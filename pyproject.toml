@@ -40,6 +40,7 @@ Issues = "https://github.com/hotdata-dev/hotdata-dlt-destination/issues"
 [project.scripts]
 hotdata-dlt-destination = "hotdata_dlt_destination.cli:main"
 hotdata-dlt-demo = "hotdata_dlt_destination.pipelines.demo:main"
+hotdata-dlt-merge-demo = "hotdata_dlt_destination.pipelines.merge_demo:main"
 hotdata-dlt-ibis-demo = "hotdata_dlt_destination.pipelines.ibis_demo:main"
 
 [build-system]
