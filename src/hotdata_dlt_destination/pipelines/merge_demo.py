@@ -4,7 +4,7 @@ Composite-key merge + hard_delete demo pipeline.
 Loads a small ``orders`` table into a Hotdata managed database in two runs to
 show off native merge/upsert by a composite key and dlt's ``hard_delete`` hint:
 
-  - load 1 (append): seeds a brand-new table with no declared key.
+  - load 1 (replace): seeds a brand-new table with no declared key.
   - load 2 (merge, primary_key=["region", "order_id"]): updates three orders,
     inserts one, and hard-deletes one -- matched by the per-load composite key,
     even though the table was never created with a key.
@@ -31,12 +31,15 @@ DATABASE = "example_orders"
 SCHEMA = "public"
 
 
-@dlt.resource(name="orders", write_disposition="append")
+@dlt.resource(name="orders", write_disposition="replace")
 def orders_seed():
     """Seed 5 orders across 3 regions into a brand-new (keyless) table.
 
-    ``deleted`` is included here only so the hard_delete column exists on the
-    table before the merge load references it.
+    Uses ``replace`` so the demo is idempotent: re-running resets the seed
+    instead of appending duplicate rows. ``replace`` declares no key, so the
+    table is still created keyless -- the merge load below matches purely on the
+    per-load key. ``deleted`` is included here only so the hard_delete column
+    exists on the table before the merge load references it.
     """
     yield [
         {"region": "us", "order_id": 1, "customer": "Alice", "amount": 100, "status": "pending", "deleted": False},
@@ -92,7 +95,7 @@ def main() -> None:
     )
 
     print(pipeline.run(orders_seed()))
-    _print_table(pipeline, "after load 1 (append, keyless)")
+    _print_table(pipeline, "after load 1 (replace, keyless)")
 
     print(pipeline.run(orders_changes()))
     _print_table(pipeline, "after load 2 (merge by [region, order_id] + hard_delete)")
