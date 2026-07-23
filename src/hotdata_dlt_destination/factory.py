@@ -102,17 +102,18 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
         environment: str = None,
         **kwargs: t.Any,
     ) -> None:
-        # A workspace_id nested in a credentials dict is hoisted to the param (deprecated).
+        # A workspace_id nested in a credentials dict is hoisted to the param
+        # (deprecated). Rebuild the dict without it rather than mutating the caller's.
         if isinstance(credentials, dict) and "workspace_id" in credentials:
-            legacy_workspace_id = credentials.pop("workspace_id")
+            if workspace_id is None:
+                workspace_id = credentials["workspace_id"]
+            credentials = {k: v for k, v in credentials.items() if k != "workspace_id"}
             warnings.warn(
                 "Passing workspace_id inside credentials is deprecated; pass it as "
                 "hotdata(workspace_id=...) or set HOTDATA_WORKSPACE instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            if workspace_id is None:
-                workspace_id = legacy_workspace_id
 
         # Fall back to env vars; an explicit param/credentials takes precedence.
         if workspace_id is None:
