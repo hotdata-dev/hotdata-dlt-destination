@@ -57,19 +57,20 @@ def test_client_class_is_job_client() -> None:
     assert hotdata().client_class is HotdataJobClient
 
 
-def test_credentials_resolve_from_env(clean_env) -> None:
+def test_api_key_resolves_from_env(clean_env) -> None:
+    # The API key (a secret) is read from the environment; workspace_id is a param.
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    cfg = _resolve(hotdata(workspace_id="ws_param", database_name="d", declared_tables=["t"]))
+    assert cfg.credentials.api_key == "sk_env"
+    assert cfg.workspace_id == "ws_param"
+
+
+def test_workspace_id_has_no_env_fallback(clean_env) -> None:
+    # HOTDATA_WORKSPACE is not read — the workspace must be passed as a param.
     clean_env.setenv("HOTDATA_API_KEY", "sk_env")
     clean_env.setenv("HOTDATA_WORKSPACE", "ws_env")
     cfg = _resolve(hotdata(database_name="d", declared_tables=["t"]))
-    assert cfg.credentials.api_key == "sk_env"
-    assert cfg.workspace_id == "ws_env"
-
-
-def test_workspace_id_param_takes_precedence_over_env(clean_env) -> None:
-    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
-    clean_env.setenv("HOTDATA_WORKSPACE", "ws_env")
-    cfg = _resolve(hotdata(workspace_id="ws_param", database_name="d", declared_tables=["t"]))
-    assert cfg.workspace_id == "ws_param"
+    assert cfg.workspace_id is None
 
 
 def test_legacy_workspace_in_credentials_dict_is_hoisted_without_mutating(clean_env) -> None:

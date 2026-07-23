@@ -115,9 +115,8 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
                 stacklevel=2,
             )
 
-        # Fall back to env vars; an explicit param/credentials takes precedence.
-        if workspace_id is None:
-            workspace_id = os.environ.get("HOTDATA_WORKSPACE")
+        # The API key (a secret) may come from the environment; the workspace is a
+        # routing param with no env fallback — pass it to hotdata(workspace_id=...).
         if credentials is None and os.environ.get("HOTDATA_API_KEY") is not None:
             credentials = HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"])
 

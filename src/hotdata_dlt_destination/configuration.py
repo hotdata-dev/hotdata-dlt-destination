@@ -30,8 +30,7 @@ class HotdataClientConfiguration(DestinationClientConfiguration):
     credentials: HotdataCredentials = None
 
     workspace_id: str | None = None
-    """Hotdata workspace ID. Set via ``hotdata(workspace_id=...)`` or the
-    ``HOTDATA_WORKSPACE`` env var; the param takes precedence over the env var."""
+    """Hotdata workspace ID. Pass as a ``hotdata(workspace_id=...)`` param."""
     api_base_url: str = "https://api.hotdata.dev"
     database_name: str = "dlt"
     """Name of the managed database to load into."""
@@ -67,7 +66,7 @@ def validate_credentials(config: HotdataClientConfiguration) -> None:
     if config.credentials is None or not config.credentials.api_key:
         missing.append("api_key (set HOTDATA_API_KEY or pass credentials=)")
     if not config.workspace_id:
-        missing.append("workspace_id (set HOTDATA_WORKSPACE or pass workspace_id=)")
+        missing.append("workspace_id (pass workspace_id= to hotdata(...))")
     if missing:
         raise ConfigurationValueError(
             "hotdata destination is missing required configuration: " + "; ".join(missing)
