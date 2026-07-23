@@ -93,7 +93,8 @@ def test_resolves_once_and_reuses_run_cache() -> None:
             return [_db("db_1", "dlt")]
 
         def list_managed_tables(self, database, *, schema):
-            assert database == "db_1"  # addressed by id after the first resolve
+            # addressed by the resolved record after the first resolve
+            assert getattr(database, "id", database) == "db_1"
             return []
 
         def close(self):
@@ -134,13 +135,14 @@ def test_upload_and_load_managed_table_addresses_by_id() -> None:
         def load_managed_table(
             self, database, table, *, schema, upload_id, mode="replace", key=None
         ):
-            self.load_database = database
+            db_id = getattr(database, "id", database)
+            self.load_database = db_id
             return SimpleNamespace(
                 connection_id="conn_1",
                 schema_name=schema,
                 table_name=table,
                 row_count=1,
-                full_name=f"{database}.{schema}.{table}",
+                full_name=f"{db_id}.{schema}.{table}",
             )
 
         def close(self) -> None:
@@ -232,7 +234,7 @@ def test_fetch_table_carries_database_scope(monkeypatch) -> None:
             return [_db("db_42", "dlt")]
 
         def list_managed_tables(self, database, *, schema):
-            assert database == "db_42"
+            assert getattr(database, "id", database) == "db_42"
             return [SimpleNamespace(table="orders", synced=True)]
 
         def close(self):
@@ -274,7 +276,7 @@ def test_fetch_table_rows_skips_unsynced_tables() -> None:
             return [_db("db_1", "dlt")]
 
         def list_managed_tables(self, database, *, schema):
-            assert database == "db_1"
+            assert getattr(database, "id", database) == "db_1"
             return [SimpleNamespace(table="orders", synced=False)]
 
         def close(self) -> None:
@@ -325,7 +327,7 @@ class _EvoRuntime:
         return [SimpleNamespace(table=t) for t in self._existing_tables]
 
     def add_managed_table(self, database, table, *, schema, key=None):
-        self.added.append((database, table, schema))
+        self.added.append((getattr(database, "id", database), table, schema))
         self._existing_tables.append(table)
         return SimpleNamespace(table=table, schema=schema)
 
@@ -334,7 +336,7 @@ class _EvoRuntime:
         return _db("new_db", description)
 
     def delete_managed_database(self, db_id):
-        self.deleted.append(db_id)
+        self.deleted.append(getattr(db_id, "id", db_id))
 
     def upload_parquet(self, path):
         self.uploaded.append(path)
@@ -435,4 +437,92 @@ def test_drop_clears_run_cache() -> None:
     assert cache._hotdata_resolved_db.id == "db_1"
     client.drop_managed_database("db")
     assert cache._hotdata_resolved_db is None
+    client.close()
+
+
+# --- #55: create/upload/query-scoped keys (forbidden reads) can bootstrap ---
+# NOTE: passing the resolved ManagedDatabase into the ops (skipping the read
+# probe) requires hotdata-framework >= 0.9.0; the pin bump is the release-gated
+# final step. These tests model that passthrough via the fake runtime.
+
+from hotdata.exceptions import ApiException, ForbiddenException  # noqa: E402
+
+
+class _CreateScopedRuntime:
+    """A create/upload/query-scoped key: reads are forbidden, create/load succeed."""
+
+    def __init__(self) -> None:
+        self.created: list[str] = []
+        self.loaded: list[str] = []
+        self.list_calls = 0
+
+    def list_managed_databases(self):
+        self.list_calls += 1
+        raise ForbiddenException(status=403, reason="ACCESS_DENIED")
+
+    def create_managed_database(self, *, description, schema, tables, keys=None):
+        self.created.append(description)
+        return _db("db_new", description)
+
+    def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
+        self.loaded.append(getattr(database, "id", database))
+        return SimpleNamespace(full_name=f"{getattr(database, 'id', database)}.{schema}.{table}")
+
+    def close(self):
+        return None
+
+
+def test_create_scoped_key_bootstraps_on_forbidden_read() -> None:
+    rt = _CreateScopedRuntime()
+    cache = SimpleNamespace()
+    client = _client(rt, cache=cache)
+    db = client.ensure_managed_database(
+        "dlt", schema="public", tables=["orders"], create_if_missing=True
+    )
+    # the forbidden read did not abort — the create the key *is* allowed to make ran
+    assert rt.created == ["dlt"]
+    assert db.id == "db_new"
+    assert cache._hotdata_resolved_db.id == "db_new"  # cached for the run
+    client.close()
+
+
+def test_create_scoped_load_reuses_cache_without_further_read() -> None:
+    rt = _CreateScopedRuntime()
+    cache = SimpleNamespace()
+    client = _client(rt, cache=cache)
+    client.ensure_managed_database(
+        "dlt", schema="public", tables=["orders"], create_if_missing=True
+    )
+    reads_after_create = rt.list_calls
+    # a load in the same run resolves from cache and hands the record straight through
+    client.load_managed_table("dlt", "orders", schema="public", upload_id="u1")
+    assert rt.list_calls == reads_after_create  # no further forbidden read
+    assert rt.loaded == ["db_new"]  # addressed by the created record
+    client.close()
+
+
+def test_forbidden_read_still_raises_when_create_disabled() -> None:
+    rt = _CreateScopedRuntime()
+    client = _client(rt)
+    with pytest.raises(HotdataTerminalError):
+        client.ensure_managed_database(
+            "dlt", schema="public", tables=["orders"], create_if_missing=False
+        )
+    assert rt.created == []
+    client.close()
+
+
+def test_non_forbidden_terminal_error_does_not_trigger_create() -> None:
+    class _BadRuntime(_CreateScopedRuntime):
+        def list_managed_databases(self):
+            self.list_calls += 1
+            raise ApiException(status=400, reason="bad request")
+
+    rt = _BadRuntime()
+    client = _client(rt)
+    with pytest.raises(HotdataTerminalError):
+        client.ensure_managed_database(
+            "dlt", schema="public", tables=["orders"], create_if_missing=True
+        )
+    assert rt.created == []  # a non-403 error is a real failure, not "create it"
     client.close()

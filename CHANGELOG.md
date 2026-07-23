@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Create/upload/query-scoped API keys can now bootstrap a managed database. When the key is forbidden from reading `/databases` (403), `ensure_managed_database` creates the database (the operation the key *is* permitted to make) instead of failing, caches the returned record for the run, and hands that record to subsequent load/add/list operations so no further read is attempted. **Requires `hotdata-framework>=0.9.0`** (managed-table ops accept a resolved `ManagedDatabase` and skip the read probe — hotdata-dev/sdk-python-framework#52).
+
 ### Changed
 
 - **Breaking:** `workspace_id` moved out of `HotdataCredentials` (authentication) to a top-level `hotdata(workspace_id=...)` param / `HotdataClientConfiguration` field (configuration), matching the SDK's `Configuration(api_key=, workspace_id=)` shape. It is a **param with no environment-variable fallback** — the `HOTDATA_WORKSPACE` env var is no longer read on this path (the API key remains env-backed, as a secret). Passing `workspace_id` inside a `credentials={...}` dict still works but is deprecated (hoisted with a `DeprecationWarning`); constructing `HotdataCredentials(workspace_id=...)` now raises `TypeError` — pass `workspace_id=` to `hotdata(...)` instead.

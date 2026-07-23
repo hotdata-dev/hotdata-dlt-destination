@@ -62,6 +62,7 @@ class InMemoryBackend:
         ]
 
     def list_managed_tables(self, database, *, schema=None):
+        database = getattr(database, "id", database)  # accept a resolved ManagedDatabase or id/name
         name = self.id_to_name.get(database, database)
         return [
             SimpleNamespace(table=t, var_schema="public", synced=(name, "public", t) in self.tables)
@@ -79,6 +80,7 @@ class InMemoryBackend:
         return SimpleNamespace(id=db_id, description=description, default_connection_id="conn")
 
     def delete_managed_database(self, name_or_id):
+        name_or_id = getattr(name_or_id, "id", name_or_id)
         name = self.id_to_name.get(name_or_id, name_or_id)
         db_id = self.name_to_id.pop(name, None)
         self.id_to_name.pop(db_id, None)
@@ -87,6 +89,7 @@ class InMemoryBackend:
             del self.tables[key]
 
     def add_managed_table(self, database, table, *, schema, key=None):
+        database = getattr(database, "id", database)
         name = self.id_to_name.get(database, database)
         self.declared.setdefault(name, set()).add(table)
         self.keys[(name, schema, table)] = list(key or [])
@@ -101,6 +104,7 @@ class InMemoryBackend:
     def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
         import pyarrow as _pa
 
+        database = getattr(database, "id", database)
         name = self.id_to_name.get(database, database)
         k = (name, schema, table)
         self.load_counts[k] = self.load_counts.get(k, 0) + 1

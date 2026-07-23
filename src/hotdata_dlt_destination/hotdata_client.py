@@ -8,6 +8,11 @@ from hotdata_framework.managed_client import ManagedDatabaseClient
 from hotdata_dlt_destination.errors import HotdataTerminalError
 
 
+def _is_forbidden(exc: Exception) -> bool:
+    """True when ``exc`` wraps a 403 (create-scoped keys can't read /databases)."""
+    return getattr(getattr(exc, "__cause__", None), "status", None) == 403
+
+
 class HotdataClient(ManagedDatabaseClient):
     """Managed-database client used by the dlt destination.
 
@@ -98,29 +103,45 @@ class HotdataClient(ManagedDatabaseClient):
         except KeyError:
             if not create_if_missing:
                 raise
-            db = self._request_with_retry(
-                lambda: self._runtime.create_managed_database(
-                    description=name, schema=schema, tables=sorted(set(tables)), keys=keys
-                )
-            )
-            self._cache_db(db)
-            return db
+            return self._create_and_cache(name, schema=schema, tables=tables, keys=keys)
+        except HotdataTerminalError as exc:
+            # A create/upload/query-scoped key is forbidden from reading /databases,
+            # so it can't check existence; attempt the create it is permitted to make.
+            if not (create_if_missing and _is_forbidden(exc)):
+                raise
+            return self._create_and_cache(name, schema=schema, tables=tables, keys=keys)
 
         existing = {
             managed_table.table
             for managed_table in self._request_with_retry(
-                lambda: self._runtime.list_managed_tables(db.id, schema=schema)
+                lambda: self._runtime.list_managed_tables(db, schema=schema)
             )
         }
         # Declare any newly-required tables additively, in place, carrying their
         # key. dlt calls ``initialize_storage`` with the full table set before any
         # load job runs, so by load time this is normally a no-op.
         for table in sorted(set(tables) - existing):
-            self._add_managed_table(db.id, table, schema=schema, key=keys.get(table))
+            self._add_managed_table(db, table, schema=schema, key=keys.get(table))
+        return db
+
+    def _create_and_cache(
+        self, name: str, *, schema: str, tables: list[str], keys: dict[str, list[str]]
+    ) -> ManagedDatabase:
+        db = self._request_with_retry(
+            lambda: self._runtime.create_managed_database(
+                description=name, schema=schema, tables=sorted(set(tables)), keys=keys
+            )
+        )
+        self._cache_db(db)
         return db
 
     def _add_managed_table(
-        self, database: str, table: str, *, schema: str, key: list[str] | None = None
+        self,
+        database: str | ManagedDatabase,
+        table: str,
+        *,
+        schema: str,
+        key: list[str] | None = None,
     ) -> None:
         self._request_with_retry(
             lambda: self._runtime.add_managed_table(database, table, schema=schema, key=key)
@@ -132,7 +153,7 @@ class HotdataClient(ManagedDatabaseClient):
             db = self._resolve(name)
         except KeyError:
             return
-        self._request_with_retry(lambda: self._runtime.delete_managed_database(db.id))
+        self._request_with_retry(lambda: self._runtime.delete_managed_database(db))
         self._cache_db(None)
 
     def resolve_managed_database(self, name: str) -> ManagedDatabase:
@@ -144,9 +165,12 @@ class HotdataClient(ManagedDatabaseClient):
         return self._resolve(name)
 
     def load_managed_table(self, database: str, table: str, **kwargs):
-        """Load parquet into a managed table, addressing the database by id."""
+        """Load parquet into a managed table via the resolved database record.
+
+        Passing the resolved ``ManagedDatabase`` (not its id) lets a create-scoped
+        key load without a further read probe (framework passthrough)."""
         db = self._resolve(database)
-        return super().load_managed_table(db.id, table, **kwargs)
+        return super().load_managed_table(db, table, **kwargs)
 
     def execute_sql(self, sql: str, *, database: str) -> pa.Table:
         """Run a SQL query scoped to ``database`` and return the result as Arrow.
@@ -173,13 +197,13 @@ class HotdataClient(ManagedDatabaseClient):
         """List the managed tables in ``database``/``schema`` (used by ``has_dataset``)."""
         db = self._resolve(database)
         return self._request_with_retry(
-            lambda: self._runtime.list_managed_tables(db.id, schema=schema)
+            lambda: self._runtime.list_managed_tables(db, schema=schema)
         )
 
     def table_is_synced(self, database: str, table: str, *, schema: str) -> bool:
         db = self._resolve(database)
         for managed_table in self._request_with_retry(
-            lambda: self._runtime.list_managed_tables(db.id, schema=schema)
+            lambda: self._runtime.list_managed_tables(db, schema=schema)
         ):
             if managed_table.table == table:
                 return managed_table.synced
@@ -199,7 +223,7 @@ class HotdataClient(ManagedDatabaseClient):
         return self._request_with_retry(operation)
 
     def _table_is_synced_for(self, db: ManagedDatabase, table: str, *, schema: str) -> bool:
-        for managed_table in self._runtime.list_managed_tables(db.id, schema=schema):
+        for managed_table in self._runtime.list_managed_tables(db, schema=schema):
             if managed_table.table == table:
                 return managed_table.synced
         return False
