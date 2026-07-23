@@ -19,7 +19,7 @@ dependencies = [
     # decls (hotdata 0.8.0) and the per-load `key` on load_managed_table plus
     # create_managed_database(keys=) / add_managed_table(key=) (framework 0.8.0).
     "hotdata>=0.8.0,<0.9",
-    "hotdata-framework>=0.8.0,<0.9",
+    "hotdata-framework>=0.9.0,<0.10",
     "pandas>=2.0",
     "pyarrow>=14",
 ]
