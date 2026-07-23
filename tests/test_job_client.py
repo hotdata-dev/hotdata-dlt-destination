@@ -61,7 +61,8 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
 
 def _config(**overrides) -> HotdataClientConfiguration:
     base = {
-        "credentials": HotdataCredentials(api_key="k", workspace_id="ws"),
+        "credentials": HotdataCredentials(api_key="k"),
+        "workspace_id": "ws",
         "database_name": "dlt",
         "schema": "public",
         "write_disposition": "append",

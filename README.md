@@ -68,6 +68,7 @@ def orders_resource():
 pipeline = dlt.pipeline(
     pipeline_name="my_pipeline",
     destination=hotdata(
+        workspace_id="your_workspace_id",
         database_name="sales",
         declared_tables=["orders"],
     ),
@@ -76,12 +77,13 @@ pipeline = dlt.pipeline(
 pipeline.run(orders_resource())
 ```
 
-Set your credentials as environment variables before running:
+Set your API key in the environment before running:
 
 ```bash
 export HOTDATA_API_KEY=your_api_key
-export HOTDATA_WORKSPACE=your_workspace_id
 ```
+
+The API key is a secret, so it's read from the environment (or a dlt secrets provider). The workspace ID is routing, not a secret — pass it as the `workspace_id=` parameter (switching workspaces is a one-line change).
 
 That's it. On first run, the `sales` managed database is created automatically and the `orders` table is loaded.
 
@@ -185,8 +187,8 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 
 | Parameter | Env variable | Default | Description |
 |-----------|-------------|---------|-------------|
-| `api_key` | `HOTDATA_API_KEY` | required | Your Hotdata API key |
-| `workspace_id` | `HOTDATA_WORKSPACE` | required | Your Hotdata workspace ID |
+| `api_key` | `HOTDATA_API_KEY` | required | Your Hotdata API key (a secret; passed via `credentials=` or the env var) |
+| `workspace_id` | — | required | Your Hotdata workspace ID — pass as the `hotdata(workspace_id=...)` param (no env var) |
 | `database_name` | `HOTDATA_DATABASE` | `dlt` | Managed database to load into |
 | `schema` | `HOTDATA_SCHEMA` | `public` | Schema within the managed database |
 | `write_disposition` | `HOTDATA_WRITE_DISPOSITION` | `append` | Default write mode (see [Write modes](#write-modes)) |
@@ -196,7 +198,7 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 | `max_retries` | `HOTDATA_MAX_RETRIES` | `8` | How many times to retry a failed request |
 | `retry_backoff_seconds` | `HOTDATA_RETRY_BACKOFF_SECONDS` | `1.5` | Initial wait between retries (grows linearly with each attempt) |
 
-You can pass any of these as keyword arguments to `hotdata(...)`, or set the corresponding environment variable. `hotdata` also accepts:
+Pass these as keyword arguments to `hotdata(...)`. The `api_key` is the exception — being a secret, it's read from `HOTDATA_API_KEY` (or supplied via `credentials=`, e.g. `hotdata(credentials={"api_key": "..."}, ...)`); `workspace_id` has no environment variable. `hotdata` also accepts:
 
 - `max_table_nesting` (default `1000`) — maximum nested/child-table depth.
 - `loader_parallelism_strategy` (default `sequential`) — managed-database loads lock at the catalog level, so different tables in the same database can't load concurrently. Override only if you know your loads won't contend for the same database.
@@ -266,8 +268,7 @@ The package includes a demo that downloads 9 macro-economic indicators from the 
 
 ```bash
 export HOTDATA_API_KEY=your_api_key
-export HOTDATA_WORKSPACE=your_workspace_id
-uv run hotdata-dlt-demo
+uv run hotdata-dlt-demo --workspace-id your_workspace_id
 ```
 
 This creates an `example_macro` database with two tables:

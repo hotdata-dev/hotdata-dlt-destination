@@ -9,12 +9,15 @@ Resources loaded:
   - macro_wide            one row per month, all indicators as columns (1992 onward)
 
 Environment:
-    HOTDATA_API_KEY    -- Hotdata API key
-    HOTDATA_WORKSPACE  -- Hotdata workspace ID
+    HOTDATA_API_KEY  -- Hotdata API key
+
+Usage:
+    hotdata-dlt-demo --workspace-id <id>
 """
 
 from __future__ import annotations
 
+import argparse
 import functools
 import io
 import os
@@ -85,15 +88,17 @@ def macro_wide_resource():
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Load FRED macro indicators into Hotdata.")
+    parser.add_argument("--workspace-id", required=True, help="Hotdata workspace id")
+    args = parser.parse_args()
     all_tables = ["macro_indicators_raw", "macro_wide"]
 
     pipeline = dlt.pipeline(
         pipeline_name="macro_indicators",
         destination=hotdata(
-            credentials=HotdataCredentials(
-                api_key=os.environ["HOTDATA_API_KEY"],
-                workspace_id=os.environ["HOTDATA_WORKSPACE"],
-            ),
+            credentials=HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"]),
+            workspace_id=args.workspace_id,
+            api_base_url=os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev"),
             write_disposition="replace",
             declared_tables=all_tables,
             database_name="example_macro",

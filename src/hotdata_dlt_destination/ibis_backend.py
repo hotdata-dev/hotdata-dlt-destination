@@ -40,7 +40,7 @@ def ibis_connect(client: JobClientBase) -> Any:
     return ibis.hotdata.connect(
         api_url=config.api_base_url,
         token=config.credentials.api_key,
-        workspace_id=config.credentials.workspace_id,
+        workspace_id=config.workspace_id,
         default_schema=config.schema,
         database_id=database_id,
     )

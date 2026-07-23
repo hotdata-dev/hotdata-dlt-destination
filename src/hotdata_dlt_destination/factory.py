@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import typing as t
+import warnings
 
 from dlt.common.arithmetics import DEFAULT_NUMERIC_PRECISION, DEFAULT_NUMERIC_SCALE
 from dlt.common.data_writers.escape import (
@@ -84,7 +86,8 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
 
     def __init__(
         self,
-        credentials: HotdataCredentials | dict[str, t.Any] | str = None,
+        credentials: HotdataCredentials | dict[str, t.Any] | str | None = None,
+        workspace_id: str | None = None,
         database_name: str = None,
         schema: str = None,
         write_disposition: str = None,
@@ -99,8 +102,27 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
         environment: str = None,
         **kwargs: t.Any,
     ) -> None:
+        # A workspace_id nested in a credentials dict is hoisted to the param
+        # (deprecated). Rebuild the dict without it rather than mutating the caller's.
+        if isinstance(credentials, dict) and "workspace_id" in credentials:
+            if workspace_id is None:
+                workspace_id = credentials["workspace_id"]
+            credentials = {k: v for k, v in credentials.items() if k != "workspace_id"}
+            warnings.warn(
+                "Passing workspace_id inside credentials is deprecated; pass it as "
+                "hotdata(workspace_id=...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        # The API key (a secret) may come from the environment; the workspace is a
+        # routing param with no env fallback — pass it to hotdata(workspace_id=...).
+        if credentials is None and os.environ.get("HOTDATA_API_KEY") is not None:
+            credentials = HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"])
+
         super().__init__(
             credentials=credentials,
+            workspace_id=workspace_id,
             database_name=database_name,
             schema=schema,
             write_disposition=write_disposition,

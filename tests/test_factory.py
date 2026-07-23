@@ -1,5 +1,24 @@
+import pytest
+
 from hotdata_dlt_destination import hotdata
 from hotdata_dlt_destination.job_client import HotdataJobClient
+
+_ENV_KEYS = (
+    "HOTDATA_API_KEY",
+    "DESTINATION__HOTDATA__CREDENTIALS__API_KEY",
+    "DESTINATION__HOTDATA__WORKSPACE_ID",
+)
+
+
+def _resolve(dest):
+    return dest.configuration(dest.spec(), accept_partial=True)
+
+
+@pytest.fixture
+def clean_env(monkeypatch):
+    for key in _ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    return monkeypatch
 
 
 def test_capabilities_use_parquet_and_nesting() -> None:
@@ -35,3 +54,29 @@ def test_max_table_nesting_override() -> None:
 
 def test_client_class_is_job_client() -> None:
     assert hotdata().client_class is HotdataJobClient
+
+
+def test_api_key_resolves_from_env(clean_env) -> None:
+    # The API key (a secret) is read from the environment; workspace_id is a param.
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    cfg = _resolve(hotdata(workspace_id="ws_param", database_name="d", declared_tables=["t"]))
+    assert cfg.credentials.api_key == "sk_env"
+    assert cfg.workspace_id == "ws_param"
+
+
+def test_workspace_id_is_none_when_not_passed(clean_env) -> None:
+    # The workspace must be passed as a param — there is no environment fallback.
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    cfg = _resolve(hotdata(database_name="d", declared_tables=["t"]))
+    assert cfg.workspace_id is None
+
+
+def test_legacy_workspace_in_credentials_dict_is_hoisted_without_mutating(clean_env) -> None:
+    creds = {"api_key": "k", "workspace_id": "ws_dict"}
+    with pytest.warns(DeprecationWarning):
+        dest = hotdata(credentials=creds, database_name="d", declared_tables=["t"])
+    # the caller's dict is left intact (safe to reuse across hotdata(...) calls)
+    assert creds == {"api_key": "k", "workspace_id": "ws_dict"}
+    cfg = _resolve(dest)
+    assert cfg.credentials.api_key == "k"
+    assert cfg.workspace_id == "ws_dict"

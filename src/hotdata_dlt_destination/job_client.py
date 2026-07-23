@@ -40,7 +40,10 @@ from dlt.common.schema.typing import (
 )
 from dlt.destinations.sql_client import SqlClientBase, WithSqlClient
 
-from hotdata_dlt_destination.configuration import HotdataClientConfiguration
+from hotdata_dlt_destination.configuration import (
+    HotdataClientConfiguration,
+    validate_credentials,
+)
 from hotdata_dlt_destination.contracts import TableContract
 from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransientError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
@@ -96,9 +99,10 @@ def _is_missing_key_error(exc: Exception) -> bool:
 
 @contextmanager
 def _hotdata_api(config: HotdataClientConfiguration) -> Iterator[HotdataClient]:
+    validate_credentials(config)
     api = HotdataClient(
         api_key=config.credentials.api_key,
-        workspace_id=config.credentials.workspace_id,
+        workspace_id=config.workspace_id,
         api_base_url=config.api_base_url,
         max_retries=config.max_retries,
         retry_backoff_seconds=config.retry_backoff_seconds,

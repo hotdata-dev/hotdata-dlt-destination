@@ -14,12 +14,15 @@ no key is declared when the table is created. Rows flagged in the ``deleted``
 column (dlt's ``hard_delete`` hint) are removed by key; every other row upserts.
 
 Environment:
-    HOTDATA_API_KEY    -- Hotdata API key
-    HOTDATA_WORKSPACE  -- Hotdata workspace ID
+    HOTDATA_API_KEY  -- Hotdata API key
+
+Usage:
+    hotdata-dlt-merge-demo --workspace-id <id>
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 
 import dlt
@@ -79,13 +82,15 @@ def _print_table(pipeline: dlt.Pipeline, label: str) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Composite-key merge + hard_delete demo.")
+    parser.add_argument("--workspace-id", required=True, help="Hotdata workspace id")
+    args = parser.parse_args()
     pipeline = dlt.pipeline(
         pipeline_name="orders_merge",
         destination=hotdata(
-            credentials=HotdataCredentials(
-                api_key=os.environ["HOTDATA_API_KEY"],
-                workspace_id=os.environ["HOTDATA_WORKSPACE"],
-            ),
+            credentials=HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"]),
+            workspace_id=args.workspace_id,
+            api_base_url=os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev"),
             declared_tables=["orders"],
             database_name=DATABASE,
             schema=SCHEMA,

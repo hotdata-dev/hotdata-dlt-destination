@@ -7,21 +7,22 @@ make the difference concrete, the data is read back **two ways**:
   read_without_dlt   -- the old way: drop out of dlt, query Hotdata by hand
 
 Run against hosted Hotdata (the default) or any Hotdata API. `.env` is not
-auto-loaded, so source it first:
+auto-loaded, so source it first and pass your workspace id as an argument:
 
     set -a; source .env; set +a
-    uv run python scripts/roundtrip_demo.py
+    uv run python scripts/roundtrip_demo.py --workspace-id <id>
 
 Point at a local cluster instead by exporting HOTDATA_API_BASE_URL=http://api.localhost
-(plus a local key/workspace) before running.
+(plus a local key) before running.
 
 Env:
-    HOTDATA_API_KEY, HOTDATA_WORKSPACE   -- required
-    HOTDATA_API_BASE_URL                 -- optional (default https://api.hotdata.dev)
+    HOTDATA_API_KEY       -- required
+    HOTDATA_API_BASE_URL  -- optional (default https://api.hotdata.dev)
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 
 import dlt
@@ -72,7 +73,7 @@ def read_with_dlt(pipeline: dlt.Pipeline) -> None:
     print(ds.table("spans").arrow().schema)
 
 
-def read_without_dlt() -> None:
+def read_without_dlt(workspace_id: str) -> None:
     """The old way -- drop out of dlt and query Hotdata directly.
 
     Illustrative only (NOT shipped, NOT how we want users to read). It shows the
@@ -85,7 +86,7 @@ def read_without_dlt() -> None:
 
     rt = RuntimeClient(
         os.environ["HOTDATA_API_KEY"],
-        os.environ["HOTDATA_WORKSPACE"],
+        workspace_id,
         host=API_BASE_URL,
     )
     try:
@@ -100,13 +101,14 @@ def read_without_dlt() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="dlt <-> Hotdata round trip demo.")
+    parser.add_argument("--workspace-id", required=True, help="Hotdata workspace id")
+    workspace_id = parser.parse_args().workspace_id
     pipeline = dlt.pipeline(
         pipeline_name="roundtrip_demo",
         destination=hotdata(
-            credentials=HotdataCredentials(
-                api_key=os.environ["HOTDATA_API_KEY"],
-                workspace_id=os.environ["HOTDATA_WORKSPACE"],
-            ),
+            credentials=HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"]),
+            workspace_id=workspace_id,
             database_name=DATABASE,
             declared_tables=["spans"],
             create_database_if_missing=True,
@@ -122,7 +124,7 @@ def main() -> None:
     read_with_dlt(pipeline)
 
     print("\n== READ, the old way -- manual Hotdata SDK (illustrative) ==")
-    read_without_dlt()
+    read_without_dlt(workspace_id)
 
 
 if __name__ == "__main__":

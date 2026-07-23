@@ -28,10 +28,10 @@
 - Demo pipeline (downloads FRED macro-economic data and loads into Hotdata):
 
   ```bash
-  uv run hotdata-dlt-demo
+  uv run hotdata-dlt-demo --workspace-id <workspace_id>
   ```
 
-  Requires `HOTDATA_API_KEY` and `HOTDATA_WORKSPACE` to be set.
+  Requires `HOTDATA_API_KEY` to be set; pass your workspace id as the argument.
 
 ## Add a new pipeline
 
@@ -49,7 +49,7 @@
 
 ## Troubleshooting
 
-- `401` / `403`: verify `HOTDATA_API_KEY` and `HOTDATA_WORKSPACE`.
+- `401` / `403`: verify `HOTDATA_API_KEY` and the workspace id you passed.
 - `404` on destination paths: verify `HOTDATA_API_BASE_URL` is the API host (for example `https://api.hotdata.dev`).
 - `429` / `5xx`: increase retry/backoff values.
 - `table not declared`: list every target table in `declared_tables`. Missing tables are otherwise added to the database in place on the next run.

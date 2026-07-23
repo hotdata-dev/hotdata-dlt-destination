@@ -57,7 +57,8 @@ class FakeHotdataClient:
 def _client(fake: FakeHotdataClient | None = None) -> HotdataSqlClient:
     caps = hotdata().capabilities()
     cfg = HotdataClientConfiguration(
-        credentials=HotdataCredentials(api_key="k", workspace_id="w"),
+        credentials=HotdataCredentials(api_key="k"),
+        workspace_id="w",
         database_name="db",
         schema="public",
     )
