@@ -86,8 +86,8 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
 
     def __init__(
         self,
-        credentials: HotdataCredentials | dict[str, t.Any] | str = None,
-        workspace_id: str = None,
+        credentials: HotdataCredentials | dict[str, t.Any] | str | None = None,
+        workspace_id: str | None = None,
         database_name: str = None,
         schema: str = None,
         write_disposition: str = None,
@@ -110,7 +110,7 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
             credentials = {k: v for k, v in credentials.items() if k != "workspace_id"}
             warnings.warn(
                 "Passing workspace_id inside credentials is deprecated; pass it as "
-                "hotdata(workspace_id=...) or set HOTDATA_WORKSPACE instead.",
+                "hotdata(workspace_id=...) instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )

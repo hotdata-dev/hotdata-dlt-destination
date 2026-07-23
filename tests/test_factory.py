@@ -5,7 +5,6 @@ from hotdata_dlt_destination.job_client import HotdataJobClient
 
 _ENV_KEYS = (
     "HOTDATA_API_KEY",
-    "HOTDATA_WORKSPACE",
     "DESTINATION__HOTDATA__CREDENTIALS__API_KEY",
     "DESTINATION__HOTDATA__WORKSPACE_ID",
 )
@@ -65,10 +64,9 @@ def test_api_key_resolves_from_env(clean_env) -> None:
     assert cfg.workspace_id == "ws_param"
 
 
-def test_workspace_id_has_no_env_fallback(clean_env) -> None:
-    # HOTDATA_WORKSPACE is not read — the workspace must be passed as a param.
+def test_workspace_id_is_none_when_not_passed(clean_env) -> None:
+    # The workspace must be passed as a param — there is no environment fallback.
     clean_env.setenv("HOTDATA_API_KEY", "sk_env")
-    clean_env.setenv("HOTDATA_WORKSPACE", "ws_env")
     cfg = _resolve(hotdata(database_name="d", declared_tables=["t"]))
     assert cfg.workspace_id is None
 

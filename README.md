@@ -268,8 +268,7 @@ The package includes a demo that downloads 9 macro-economic indicators from the 
 
 ```bash
 export HOTDATA_API_KEY=your_api_key
-export HOTDATA_WORKSPACE=your_workspace_id
-uv run hotdata-dlt-demo
+uv run hotdata-dlt-demo your_workspace_id
 ```
 
 This creates an `example_macro` database with two tables:
