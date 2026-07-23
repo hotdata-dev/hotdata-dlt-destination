@@ -432,8 +432,8 @@ async query polling.
 ## 14. Running & testing it for real — `roundtrip_demo.py`
 
 ```python
-"""dlt -> hotdata -> dlt round trip. Run: set -a; source .env; set +a; uv run python scripts/roundtrip_demo.py
-Point at the LOCAL cluster with HOTDATA_API_BASE_URL=http://api.localhost (+ a local key/workspace),
+"""dlt -> hotdata -> dlt round trip. Run: set -a; source .env; set +a; uv run python scripts/roundtrip_demo.py --workspace-id <id>
+Point at the LOCAL cluster with HOTDATA_API_BASE_URL=http://api.localhost (+ a local key),
 or omit for hosted api.hotdata.dev."""
 import dlt
 from hotdata_dlt_destination import hotdata

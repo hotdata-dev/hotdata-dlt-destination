@@ -28,7 +28,7 @@
 - Demo pipeline (downloads FRED macro-economic data and loads into Hotdata):
 
   ```bash
-  uv run hotdata-dlt-demo <workspace_id>
+  uv run hotdata-dlt-demo --workspace-id <workspace_id>
   ```
 
   Requires `HOTDATA_API_KEY` to be set; pass your workspace id as the argument.
