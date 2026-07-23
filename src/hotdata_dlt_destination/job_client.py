@@ -107,6 +107,8 @@ def _hotdata_api(config: HotdataClientConfiguration) -> Iterator[HotdataClient]:
         max_retries=config.max_retries,
         retry_backoff_seconds=config.retry_backoff_seconds,
     )
+    # Share the run's resolved-database cache across every short-lived client.
+    api.bind_run_cache(config)
     try:
         yield api
     finally:

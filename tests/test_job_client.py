@@ -31,6 +31,9 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
         def __init__(self, **_kwargs: object) -> None:
             self._pending: pa.Table | None = None
 
+        def bind_run_cache(self, cache: object) -> None:
+            return None
+
         def ensure_managed_database(self, name, *, schema, tables, keys=None, create_if_missing):
             return SimpleNamespace(id="db_1")
 
@@ -195,6 +198,9 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
     class RecordingApi:
         def __init__(self, **_kwargs: object) -> None:
             self._pending = None
+
+        def bind_run_cache(self, cache: object) -> None:
+            return None
 
         def ensure_managed_database(self, name, *, schema, tables, keys=None, create_if_missing):
             calls["keys"] = keys
@@ -486,6 +492,9 @@ def test_is_storage_initialized_false_when_missing(monkeypatch) -> None:
     class MissingApi:
         def __init__(self, **_kwargs: object) -> None:
             pass
+
+        def bind_run_cache(self, cache: object) -> None:
+            return None
 
         def ensure_managed_database(self, name, *, schema, tables, keys=None, create_if_missing):
             raise KeyError(name)

@@ -177,6 +177,7 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
             max_retries=self._config.max_retries,
             retry_backoff_seconds=self._config.retry_backoff_seconds,
         )
+        self._client.bind_run_cache(self._config)
         return self._client
 
     def close_connection(self) -> None:

@@ -7,13 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- The API key now resolves from `HOTDATA_API_KEY` following the README quickstart: setting the env var (with no `credentials=` argument) populates the destination, instead of leaving `credentials.api_key` unset and failing with an opaque `NoneType` error deep in `hotdata-framework`. Missing `api_key`/`workspace_id` now raises a clear `ConfigurationValueError` at setup naming the missing field.
-
 ### Changed
 
 - **Breaking:** `workspace_id` moved out of `HotdataCredentials` (authentication) to a top-level `hotdata(workspace_id=...)` param / `HotdataClientConfiguration` field (configuration), matching the SDK's `Configuration(api_key=, workspace_id=)` shape. It is a **param with no environment-variable fallback** — the `HOTDATA_WORKSPACE` env var is no longer read on this path (the API key remains env-backed, as a secret). Passing `workspace_id` inside a `credentials={...}` dict still works but is deprecated (hoisted with a `DeprecationWarning`); constructing `HotdataCredentials(workspace_id=...)` now raises `TypeError` — pass `workspace_id=` to `hotdata(...)` instead.
+
+### Fixed
+
+- The API key now resolves from `HOTDATA_API_KEY` following the README quickstart: setting the env var (with no `credentials=` argument) populates the destination, instead of leaving `credentials.api_key` unset and failing with an opaque `NoneType` error deep in `hotdata-framework`. Missing `api_key`/`workspace_id` now raises a clear `ConfigurationValueError` at setup naming the missing field.
+- Managed-database name resolution is now collision-safe and resolved once per run. Hotdata database names are not unique, and the destination previously took the first `list_databases` match on every operation — so a name collision could silently read from, write to, or **drop** the wrong database. It now raises a clear error when a name matches more than one database, resolves the name to its record a single time per run (cached on the shared config), and addresses every subsequent operation (load/add/list/query/drop) by id.
 
 
 ## [0.10.0] - 2026-07-20

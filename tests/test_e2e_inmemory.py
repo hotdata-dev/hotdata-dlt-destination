@@ -55,6 +55,12 @@ class InMemoryBackend:
             raise KeyError(name)
         return SimpleNamespace(id=self.name_to_id[name], default_connection_id="conn")
 
+    def list_managed_databases(self):
+        return [
+            SimpleNamespace(id=db_id, description=name, default_connection_id="conn")
+            for name, db_id in self.name_to_id.items()
+        ]
+
     def list_managed_tables(self, database, *, schema=None):
         name = self.id_to_name.get(database, database)
         return [
@@ -70,7 +76,7 @@ class InMemoryBackend:
         self.declared[description] = set(tables)
         for t in tables:
             self.keys[(description, schema, t)] = list((keys or {}).get(t, []))
-        return SimpleNamespace(id=db_id, default_connection_id="conn")
+        return SimpleNamespace(id=db_id, description=description, default_connection_id="conn")
 
     def delete_managed_database(self, name_or_id):
         name = self.id_to_name.get(name_or_id, name_or_id)
