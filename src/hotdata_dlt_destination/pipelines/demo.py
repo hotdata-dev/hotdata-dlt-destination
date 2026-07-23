@@ -90,10 +90,8 @@ def main() -> None:
     pipeline = dlt.pipeline(
         pipeline_name="macro_indicators",
         destination=hotdata(
-            credentials=HotdataCredentials(
-                api_key=os.environ["HOTDATA_API_KEY"],
-                workspace_id=os.environ["HOTDATA_WORKSPACE"],
-            ),
+            credentials=HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"]),
+            workspace_id=os.environ["HOTDATA_WORKSPACE"],
             write_disposition="replace",
             declared_tables=all_tables,
             database_name="example_macro",

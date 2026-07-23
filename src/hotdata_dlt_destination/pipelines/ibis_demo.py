@@ -82,10 +82,8 @@ def main() -> None:
     pipeline = dlt.pipeline(
         pipeline_name="ibis_demo",
         destination=hotdata(
-            credentials=HotdataCredentials(
-                api_key=os.environ["HOTDATA_API_KEY"],
-                workspace_id=os.environ["HOTDATA_WORKSPACE"],
-            ),
+            credentials=HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"]),
+            workspace_id=os.environ["HOTDATA_WORKSPACE"],
             api_base_url=os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev"),
             write_disposition="replace",
             declared_tables=["trips"],

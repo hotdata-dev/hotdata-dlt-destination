@@ -82,10 +82,8 @@ def main() -> None:
     pipeline = dlt.pipeline(
         pipeline_name="orders_merge",
         destination=hotdata(
-            credentials=HotdataCredentials(
-                api_key=os.environ["HOTDATA_API_KEY"],
-                workspace_id=os.environ["HOTDATA_WORKSPACE"],
-            ),
+            credentials=HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"]),
+            workspace_id=os.environ["HOTDATA_WORKSPACE"],
             declared_tables=["orders"],
             database_name=DATABASE,
             schema=SCHEMA,

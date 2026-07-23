@@ -243,7 +243,8 @@ def backend(monkeypatch):
 
 def _dest(database_name, declared_tables, write_disposition="append"):
     return hotdata(
-        credentials=HotdataCredentials(api_key="test", workspace_id="ws_test"),
+        credentials=HotdataCredentials(api_key="test"),
+        workspace_id="ws_test",
         database_name=database_name,
         declared_tables=declared_tables,
         write_disposition=write_disposition,
@@ -362,7 +363,8 @@ def test_state_sync_roundtrip(backend, tmp_path):
     assert backend.rows("e2e_state", "_dlt_pipeline_state") is not None
 
     cfg = HotdataClientConfiguration(
-        credentials=HotdataCredentials(api_key="test", workspace_id="ws_test"),
+        credentials=HotdataCredentials(api_key="test"),
+        workspace_id="ws_test",
         database_name="e2e_state",
         schema="public",
     )

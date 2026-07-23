@@ -83,6 +83,12 @@ export HOTDATA_API_KEY=your_api_key
 export HOTDATA_WORKSPACE=your_workspace_id
 ```
 
+The API key is a secret, so it stays in the environment (or a dlt secrets provider). The workspace is just routing — you can also pass it as a param, which takes precedence over `HOTDATA_WORKSPACE` and makes switching workspaces a one-line change:
+
+```python
+destination=hotdata(workspace_id="your_workspace_id", database_name="sales", declared_tables=["orders"])
+```
+
 That's it. On first run, the `sales` managed database is created automatically and the `orders` table is loaded.
 
 `hotdata` supports nested/child tables, preserves dlt's internal columns (`_dlt_id`, `_dlt_load_id`), and persists schema-version, load, and pipeline-state tables in the managed database so **incremental sources resume correctly across runs**. If an existing managed database is missing a declared table on a later run, the table is added to it in place; existing tables and their data are left untouched.
@@ -185,8 +191,8 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 
 | Parameter | Env variable | Default | Description |
 |-----------|-------------|---------|-------------|
-| `api_key` | `HOTDATA_API_KEY` | required | Your Hotdata API key |
-| `workspace_id` | `HOTDATA_WORKSPACE` | required | Your Hotdata workspace ID |
+| `api_key` | `HOTDATA_API_KEY` | required | Your Hotdata API key (a secret; passed via `credentials=` or the env var) |
+| `workspace_id` | `HOTDATA_WORKSPACE` | required | Your Hotdata workspace ID (a `hotdata(workspace_id=...)` param; the param takes precedence over the env var) |
 | `database_name` | `HOTDATA_DATABASE` | `dlt` | Managed database to load into |
 | `schema` | `HOTDATA_SCHEMA` | `public` | Schema within the managed database |
 | `write_disposition` | `HOTDATA_WRITE_DISPOSITION` | `append` | Default write mode (see [Write modes](#write-modes)) |
@@ -196,7 +202,7 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 | `max_retries` | `HOTDATA_MAX_RETRIES` | `8` | How many times to retry a failed request |
 | `retry_backoff_seconds` | `HOTDATA_RETRY_BACKOFF_SECONDS` | `1.5` | Initial wait between retries (grows linearly with each attempt) |
 
-You can pass any of these as keyword arguments to `hotdata(...)`, or set the corresponding environment variable. `hotdata` also accepts:
+You can pass any of these as keyword arguments to `hotdata(...)`, or set the corresponding environment variable (`api_key` goes through `credentials=`, e.g. `hotdata(credentials={"api_key": "..."}, ...)`). `hotdata` also accepts:
 
 - `max_table_nesting` (default `1000`) — maximum nested/child-table depth.
 - `loader_parallelism_strategy` (default `sequential`) — managed-database loads lock at the catalog level, so different tables in the same database can't load concurrently. Override only if you know your loads won't contend for the same database.

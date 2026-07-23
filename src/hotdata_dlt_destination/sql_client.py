@@ -29,6 +29,7 @@ from dlt.destinations.sql_client import (
 )
 from dlt.destinations.typing import DBApi, DBTransaction
 
+from hotdata_dlt_destination.configuration import validate_credentials
 from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransientError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 
@@ -168,9 +169,10 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
     # --- abstract methods -------------------------------------------------
 
     def open_connection(self) -> HotdataClient:
+        validate_credentials(self._config)
         self._client = HotdataClient(
             api_key=self._config.credentials.api_key,
-            workspace_id=self._config.credentials.workspace_id,
+            workspace_id=self._config.workspace_id,
             api_base_url=self._config.api_base_url,
             max_retries=self._config.max_retries,
             retry_backoff_seconds=self._config.retry_backoff_seconds,

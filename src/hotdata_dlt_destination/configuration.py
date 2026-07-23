@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from typing import ClassVar, Final
 
 from dlt.common.configuration import configspec
+from dlt.common.configuration.exceptions import ConfigurationValueError
 from dlt.common.configuration.specs import known_sections
 from dlt.common.destination.client import (
     CredentialsConfiguration,
@@ -15,12 +16,10 @@ from dlt.common.destination.client import (
 @configspec
 class HotdataCredentials(CredentialsConfiguration):
     api_key: str | None = None
-    """Hotdata API key."""
-    workspace_id: str | None = None
-    """Hotdata workspace ID."""
+    """Hotdata API key (the secret / auth token)."""
 
     def __str__(self) -> str:
-        return f"hotdata://{self.workspace_id}"
+        return "hotdata://***" if self.api_key else "hotdata://<unset>"
 
 
 @configspec
@@ -30,6 +29,9 @@ class HotdataClientConfiguration(DestinationClientConfiguration):
     )
     credentials: HotdataCredentials = None
 
+    workspace_id: str | None = None
+    """Hotdata workspace ID. Set via ``hotdata(workspace_id=...)`` or the
+    ``HOTDATA_WORKSPACE`` env var; the param takes precedence over the env var."""
     api_base_url: str = "https://api.hotdata.dev"
     database_name: str = "dlt"
     """Name of the managed database to load into."""
@@ -56,4 +58,17 @@ class HotdataClientConfiguration(DestinationClientConfiguration):
     __recommended_sections__: ClassVar[Sequence[str]] = (known_sections.DESTINATION, "hotdata", "")
 
     def __str__(self) -> str:
-        return str(self.credentials)
+        return f"hotdata://{self.workspace_id}"
+
+
+def validate_credentials(config: HotdataClientConfiguration) -> None:
+    """Raise an actionable error when the fields needed to reach the API are unset."""
+    missing = []
+    if config.credentials is None or not config.credentials.api_key:
+        missing.append("api_key (set HOTDATA_API_KEY or pass credentials=)")
+    if not config.workspace_id:
+        missing.append("workspace_id (set HOTDATA_WORKSPACE or pass workspace_id=)")
+    if missing:
+        raise ConfigurationValueError(
+            "hotdata destination is missing required configuration: " + "; ".join(missing)
+        )
