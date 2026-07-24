@@ -71,6 +71,20 @@ def test_workspace_id_is_none_when_not_passed(clean_env) -> None:
     assert cfg.workspace_id is None
 
 
+def test_database_id_param_flows_to_config(clean_env) -> None:
+    # An existing database is targeted by id (names are not unique identifiers).
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    cfg = _resolve(hotdata(workspace_id="ws", database_id="db_abc", declared_tables=["t"]))
+    assert cfg.database_id == "db_abc"
+
+
+def test_database_id_is_none_when_not_passed(clean_env) -> None:
+    # No id means "create by name on first run"; the id is None until then.
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    cfg = _resolve(hotdata(workspace_id="ws", database_name="d", declared_tables=["t"]))
+    assert cfg.database_id is None
+
+
 def test_legacy_workspace_in_credentials_dict_is_hoisted_without_mutating(clean_env) -> None:
     creds = {"api_key": "k", "workspace_id": "ws_dict"}
     with pytest.warns(DeprecationWarning):

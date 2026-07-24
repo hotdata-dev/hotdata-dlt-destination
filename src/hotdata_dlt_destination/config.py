@@ -28,6 +28,7 @@ def _parse_backoff(value: str) -> float:
 class HotdataDestinationConfig:
     api_key: str
     database_name: str
+    database_id: str | None = None
     api_base_url: str = "https://api.hotdata.dev"
     schema: str = "public"
     write_disposition: str = "append"
@@ -43,6 +44,7 @@ class HotdataDestinationConfig:
         return cls(
             api_key=os.environ["HOTDATA_API_KEY"],
             database_name=os.environ.get("HOTDATA_DATABASE", "dlt"),
+            database_id=os.environ.get("HOTDATA_DATABASE_ID") or None,
             api_base_url=os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev"),
             schema=os.environ.get("HOTDATA_SCHEMA", "public"),
             write_disposition=os.environ.get("HOTDATA_WRITE_DISPOSITION", "append"),

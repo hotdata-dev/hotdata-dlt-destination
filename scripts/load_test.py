@@ -31,6 +31,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -140,7 +141,7 @@ def run_database_load(
     workspace_id: str,
     api_base_url: str,
     do_query: bool,
-) -> list[PhaseResult]:
+) -> tuple[list[PhaseResult], str | None]:
     results: list[PhaseResult] = []
 
     client = HotdataClient(
@@ -150,23 +151,28 @@ def run_database_load(
         max_retries=3,
         retry_backoff_seconds=1.0,
     )
+    # id-first: bind a run config so the created database is cached and every
+    # subsequent op addresses it by id (database_name is only the create label).
+    run_cfg = SimpleNamespace(database_id=None, database_name=db_name)
+    client.bind_run_cache(run_cfg)
+    created_id: str | None = None
 
     try:
         # --- create database ---
         t0 = time.perf_counter()
         try:
-            client.ensure_managed_database(
-                db_name,
+            db = client.ensure_managed_database(
                 schema="public",
                 tables=["events"],
                 create_if_missing=True,
             )
+            created_id = db.id
             results.append(PhaseResult(db_name, "create_db", time.perf_counter() - t0))
         except Exception as exc:
             results.append(
                 PhaseResult(db_name, "create_db", time.perf_counter() - t0, error=str(exc))
             )
-            return results
+            return results, created_id
 
         # --- generate + write parquet ---
         table = generate_table(rows)
@@ -182,7 +188,7 @@ def run_database_load(
             results.append(
                 PhaseResult(db_name, "write_parquet", time.perf_counter() - t0, error=str(exc))
             )
-            return results
+            return results, created_id
 
         # --- upload parquet ---
         t0 = time.perf_counter()
@@ -191,7 +197,7 @@ def run_database_load(
             results.append(PhaseResult(db_name, "upload", time.perf_counter() - t0, rows=rows))
         except Exception as exc:
             results.append(PhaseResult(db_name, "upload", time.perf_counter() - t0, error=str(exc)))
-            return results
+            return results, created_id
         finally:
             if parquet_path:
                 with contextlib.suppress(OSError):
@@ -200,17 +206,17 @@ def run_database_load(
         # --- load managed table ---
         t0 = time.perf_counter()
         try:
-            client.load_managed_table(db_name, "events", schema="public", upload_id=upload_id)
+            client.load_managed_table("events", schema="public", upload_id=upload_id)
             results.append(PhaseResult(db_name, "load", time.perf_counter() - t0, rows=rows))
         except Exception as exc:
             results.append(PhaseResult(db_name, "load", time.perf_counter() - t0, error=str(exc)))
-            return results
+            return results, created_id
 
         # --- query via Arrow IPC ---
         if do_query:
             t0 = time.perf_counter()
             try:
-                result_table = client.fetch_table(database=db_name, schema="public", table="events")
+                result_table = client.fetch_table(schema="public", table="events")
                 n = len(result_table) if result_table is not None else 0
                 results.append(PhaseResult(db_name, "query", time.perf_counter() - t0, rows=n))
             except Exception as exc:
@@ -221,7 +227,7 @@ def run_database_load(
     finally:
         client.close()
 
-    return results
+    return results, created_id
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +236,7 @@ def run_database_load(
 
 
 def delete_databases(
-    db_names: list[str],
+    database_ids: list[str],
     *,
     api_key: str,
     workspace_id: str,
@@ -240,13 +246,13 @@ def delete_databases(
 
     client = RuntimeClient(api_key, workspace_id, host=api_base_url.rstrip("/"))
     try:
-        for name in db_names:
+        for db_id in database_ids:
             try:
-                db = client.resolve_managed_database(name)
-                client.delete_managed_database(db.id)
-                print(f"  deleted {name}")
+                # addressed by id (GET /databases/{id}) — no by-name lookup
+                client.delete_managed_database(db_id)
+                print(f"  deleted {db_id}")
             except Exception as exc:
-                print(f"  could not delete {name}: {exc}")
+                print(f"  could not delete {db_id}: {exc}")
     finally:
         client.close()
 
@@ -307,11 +313,14 @@ def main() -> None:
         }
 
         completed = 0
+        created_ids: list[str] = []
         for future in as_completed(futures):
             name = futures[future]
             completed += 1
             try:
-                phase_results = future.result()
+                phase_results, created_id = future.result()
+                if created_id:
+                    created_ids.append(created_id)
             except Exception as exc:
                 print(f"  [{completed:>3}/{args.databases}] {name}  FATAL: {exc}")
                 continue
@@ -339,7 +348,7 @@ def main() -> None:
     if not args.no_cleanup:
         print("Cleaning up databases...")
         delete_databases(
-            db_names,
+            created_ids,
             api_key=api_key,
             workspace_id=workspace_id,
             api_base_url=api_base_url,

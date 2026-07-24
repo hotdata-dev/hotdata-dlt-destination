@@ -38,14 +38,14 @@ class FakeHotdataClient:
         self._table = table if table is not None else CANNED
         # tables=None explicitly models a missing database (list raises).
         self._tables = ["spans"] if tables is _MISSING else tables
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[str] = []
         self.closed = False
 
-    def execute_sql(self, sql: str, *, database: str) -> pa.Table:
-        self.calls.append((sql, database))
+    def execute_sql(self, sql: str) -> pa.Table:
+        self.calls.append(sql)
         return self._table
 
-    def list_managed_tables(self, database: str, *, schema: str):
+    def list_managed_tables(self, *, schema: str):
         if self._tables is None:
             raise HotdataTerminalError("database not found")
         return list(self._tables)
@@ -120,8 +120,8 @@ def test_execute_query_yields_cursor() -> None:
     sc = _client(fake)
     with sc.execute_query('SELECT * FROM "default"."public"."spans"') as cur:
         assert cur.df().shape == (3, 3)
-    # SQL passed through verbatim, scoped by managed database_name.
-    assert fake.calls == [('SELECT * FROM "default"."public"."spans"', "db")]
+    # SQL passed through verbatim; the database scope is resolved by id internally.
+    assert fake.calls == ['SELECT * FROM "default"."public"."spans"']
 
 
 def test_execute_sql_returns_rows() -> None:

@@ -88,6 +88,7 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
         self,
         credentials: HotdataCredentials | dict[str, t.Any] | str | None = None,
         workspace_id: str | None = None,
+        database_id: str | None = None,
         database_name: str = None,
         schema: str = None,
         write_disposition: str = None,
@@ -123,6 +124,7 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
         super().__init__(
             credentials=credentials,
             workspace_id=workspace_id,
+            database_id=database_id,
             database_name=database_name,
             schema=schema,
             write_disposition=write_disposition,

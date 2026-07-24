@@ -31,7 +31,10 @@
   uv run hotdata-dlt-demo --workspace-id <workspace_id>
   ```
 
-  Requires `HOTDATA_API_KEY` to be set; pass your workspace id as the argument.
+  Requires `HOTDATA_API_KEY` to be set; pass your workspace id as the argument. On
+  the first run the demo creates a managed database and prints its id; pass that id
+  on later runs (`--database-id <id>`) to load into the same database instead of
+  creating a new one (managed databases are addressed by id, not by name).
 
 ## Add a new pipeline
 

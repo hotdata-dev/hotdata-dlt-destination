@@ -321,7 +321,7 @@ wheels = [
 
 [[package]]
 name = "hotdata-dlt-destination"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "dlt" },
@@ -350,7 +350,7 @@ dev = [
 requires-dist = [
     { name = "dlt", specifier = ">=1.28.1,<1.29" },
     { name = "hotdata", specifier = ">=0.8.0,<0.9" },
-    { name = "hotdata-framework", specifier = ">=0.8.0,<0.9" },
+    { name = "hotdata-framework", specifier = ">=0.9.0,<0.10" },
     { name = "hotdata-ibis", marker = "extra == 'ibis'", specifier = ">=0.3.1,<0.4" },
     { name = "ibis-framework", marker = "extra == 'ibis'", specifier = ">=12,<13" },
     { name = "pandas", specifier = ">=2.0" },
@@ -369,16 +369,16 @@ dev = [
 
 [[package]]
 name = "hotdata-framework"
-version = "0.8.0"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hotdata" },
     { name = "pandas" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/48/24/879cbc596520023d1757eef8fd73b482404fb98e98d48a19571e8932bec2/hotdata_framework-0.8.0.tar.gz", hash = "sha256:057ebe8818298f1e8b4ef4250a4f4266514c7b51f3a4eb79425a1548885348ce", size = 100984, upload-time = "2026-07-20T07:04:50.175Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/05/95/2e8970ba68bf0001d92d0044766c0e13cb09e7378aa003c637ad571786b0/hotdata_framework-0.9.0.tar.gz", hash = "sha256:a6497ef9fc41f104c89d5636e958a1feaf1c697d98d01436329afeb75f773583", size = 102244, upload-time = "2026-07-23T19:32:56.546Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/cd/c5078d826a2240e6d7c6ef5f558280772ee189991af15d0332fd11c5a67c/hotdata_framework-0.8.0-py3-none-any.whl", hash = "sha256:6ba899e9015b71945bf56df873c0486382d4f11763a57afc423338bd68abb30a", size = 16330, upload-time = "2026-07-20T07:04:49.089Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/52/d9bf9001d48262f84a712a3f07c07492964a4481d902117b8986b0dada9e/hotdata_framework-0.9.0-py3-none-any.whl", hash = "sha256:32e7a541823365b5d0e741c9209683406e3851de0434012631a7a7b16b029c1b", size = 16550, upload-time = "2026-07-23T19:32:55.064Z" },
 ]
 
 [[package]]

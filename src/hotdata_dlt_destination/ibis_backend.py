@@ -35,7 +35,7 @@ def ibis_connect(client: JobClientBase) -> Any:
     config = client.config
 
     with _hotdata_api(config) as api:
-        database_id = api.resolve_managed_database(config.database_name).id
+        database_id = api.resolved_database_id()
 
     return ibis.hotdata.connect(
         api_url=config.api_base_url,

@@ -132,7 +132,7 @@ scoping (see §8):
 ```python
 def __init__(self, managed_database, schema, capabilities, config):
     super().__init__(
-        database_name=managed_database,     # used only as the execute_sql(database=) scope
+        database_name=managed_database,     # display label only; scoping resolves by id from config
         dataset_name=schema,                # "public" -> drives default.public.<table>
         staging_dataset_name=schema,        # no staging; mirror dataset_name
         capabilities=capabilities,
@@ -148,7 +148,7 @@ def __init__(self, managed_database, schema, capabilities, config):
 | `open_connection() -> HotdataClient` | Construct a `HotdataClient` from config, store on `self._client`, return it. No socket. | dlt opens the client when a dataset is materialized. |
 | `close_connection() -> None` | `self._client.close()`; clear it. | Dataset context exit. |
 | `native_connection -> HotdataClient` (property) | Return `self._client`. | Base `__getattr__` delegation; ibis backend. |
-| `execute_query(query, *args, **kwargs) -> ContextManager[DBApiCursor]` | `@contextmanager`; run `self._client.execute_sql(sql, database=self.database_name)`, wrap the returned `pyarrow.Table` in `HotdataCursor`, `yield` it. Map SDK errors via `@raise_database_error`. | **Every read** — `Relation.to_sql()` → here. |
+| `execute_query(query, *args, **kwargs) -> ContextManager[DBApiCursor]` | `@contextmanager`; run `self._client.execute_sql(sql)` (the database is resolved by id from the bound config), wrap the returned `pyarrow.Table` in `HotdataCursor`, `yield` it. Map SDK errors via `@raise_database_error`. | **Every read** — `Relation.to_sql()` → here. |
 | `execute_sql(query, *args, **kwargs) -> Sequence[Sequence] \| None` | `with self.execute_query(...) as c: return None if c.description is None else c.fetchall()`. | Base helpers, direct SQL. |
 | `begin_transaction() -> ContextManager[DBTransaction]` | No-op: `yield self`. Hotdata/DataFusion has no transactions (`supports_ddl_transactions=False`). | dlt may wrap ops in a txn. |
 | `_make_database_exception(ex) -> Exception` (static) | Map undefined-relation → `DatabaseUndefinedRelation`; transient → transient; else terminal. **Scan the whole `__cause__` chain**, not just `str(ex)`: the SDK's `classify_sdk_error` collapses the `ApiException` to `"400: Bad Request"`, so the engine's descriptive `"table … not found"` only appears deeper in the chain (in the underlying `hotdata.exceptions.BadRequestException`). | `@raise_database_error`. |
@@ -180,7 +180,8 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):   # + WithS
     def sql_client(self) -> HotdataSqlClient:
         if self._sql_client is None:
             self._sql_client = HotdataSqlClient(
-                self.config.database_name, self.config.schema, self.capabilities, self.config
+                self.config.database_id or self.config.database_name,
+                self.config.schema, self.capabilities, self.config
             )
         return self._sql_client
 ```
@@ -238,14 +239,13 @@ A single dlt "location" splits into **two independent mechanisms**:
 
 1. **Table path — goes into the SQL.** `make_qualified_table_name("spans")` →
    `"default"."public"."spans"` because `catalog_name()="default"` and `dataset_name="public"`.
-2. **Database scoping — goes into the request, not the SQL.** The managed database is passed as
-   `execute_sql(sql, database=self.database_name)`. Query scoping is by database **id**
-   (`_query_database_scoped(database_id=...)` → `X-Database-Id` header), so our `HotdataClient.execute_sql`
-   resolves **name → id** first via `resolve_managed_database(name).id` — exactly as `fetch_table`
-   already does. (This is what the CLI's `-d` flag supplies manually as an id; the SqlClient passes the
-   *name* and the id lookup lives in our client.)
+2. **Database scoping — goes into the request, not the SQL.** Query scoping is by database **id**
+   (`_query_database_scoped(database_id=...)` → `X-Database-Id` header). `HotdataClient.execute_sql`
+   resolves the run's database **by id** from the bound config (`database_id`, or the record created
+   this run) — never by name — exactly as `fetch_table` does. Managed databases are addressed by id
+   only; names are not unique and are not used to look one up.
 
-**Decision — mirror the write path:** address by the destination's managed `database_name` + the fixed
+**Decision — mirror the write path:** address by the run's managed database **id** + the fixed
 `public` schema, exactly as writes do. Guarantees reads return what writes wrote, zero write-side
 change. (Consequence: dlt's pipeline `dataset_name` is not the addressing key — same as today, which is
 why load output shows `dataset None`.) Whether to make `dataset_name` idiomatic later is a joint

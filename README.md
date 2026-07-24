@@ -85,7 +85,14 @@ export HOTDATA_API_KEY=your_api_key
 
 The API key is a secret, so it's read from the environment (or a dlt secrets provider). The workspace ID is routing, not a secret — pass it as the `workspace_id=` parameter (switching workspaces is a one-line change).
 
-That's it. On first run, the `sales` managed database is created automatically and the `orders` table is loaded.
+That's it. On first run, a managed database labelled `sales` is created automatically, the `orders` table is loaded, and the new database **id** is printed:
+
+```
+hotdata: created managed database db_abc123 (name='sales'). Pin it for future runs by
+setting database_id=db_abc123 (HOTDATA_DATABASE_ID / [destination.hotdata] database_id).
+```
+
+Managed databases are addressed by id — Hotdata database names are not unique, so a name can't identify one. To keep loading into the **same** database on later runs, pass that id (via `hotdata(database_id="db_abc123")`, `HOTDATA_DATABASE_ID`, or `[destination.hotdata] database_id` in `.dlt/config.toml`). Without a pinned id, each run creates a new database.
 
 `hotdata` supports nested/child tables, preserves dlt's internal columns (`_dlt_id`, `_dlt_load_id`), and persists schema-version, load, and pipeline-state tables in the managed database so **incremental sources resume correctly across runs**. If an existing managed database is missing a declared table on a later run, the table is added to it in place; existing tables and their data are left untouched.
 
@@ -189,7 +196,8 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 |-----------|-------------|---------|-------------|
 | `api_key` | `HOTDATA_API_KEY` | required | Your Hotdata API key (a secret; passed via `credentials=` or the env var) |
 | `workspace_id` | — | required | Your Hotdata workspace ID — pass as the `hotdata(workspace_id=...)` param (no env var) |
-| `database_name` | `HOTDATA_DATABASE` | `dlt` | Managed database to load into |
+| `database_id` | `HOTDATA_DATABASE_ID` | — | Id of an existing managed database to load into. This is how a database is targeted — names are not unique, so the **id** is the identifier. Printed on first-run create; pin it to reuse the database on later runs |
+| `database_name` | `HOTDATA_DATABASE` | `dlt` | Display label used **only when creating** a new managed database (never to look one up) |
 | `schema` | `HOTDATA_SCHEMA` | `public` | Schema within the managed database |
 | `write_disposition` | `HOTDATA_WRITE_DISPOSITION` | `append` | Default write mode (see [Write modes](#write-modes)) |
 | `declared_tables` | `HOTDATA_DECLARED_TABLES` | — | All table names the pipeline will write (required for multi-table pipelines — see [Multiple tables](#multiple-tables)) |

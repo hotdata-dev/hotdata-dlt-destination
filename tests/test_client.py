@@ -1,16 +1,22 @@
 from types import SimpleNamespace
 
 import pytest
+from hotdata.exceptions import ApiException, ForbiddenException
 
 from hotdata_dlt_destination.errors import HotdataTerminalError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 
 
-def _db(db_id: str, name: str, conn: str = "conn") -> SimpleNamespace:
+def _db(db_id: str, name: str = "dlt", conn: str = "conn") -> SimpleNamespace:
     return SimpleNamespace(id=db_id, description=name, default_connection_id=conn)
 
 
-def _client(runtime, *, cache=None) -> HotdataClient:
+def _cfg(*, database_id=None, database_name="dlt") -> SimpleNamespace:
+    # Stand-in for the shared HotdataClientConfiguration the run binds.
+    return SimpleNamespace(database_id=database_id, database_name=database_name)
+
+
+def _client(runtime, *, config=None) -> HotdataClient:
     client = HotdataClient(
         api_key="k",
         workspace_id="ws",
@@ -19,157 +25,241 @@ def _client(runtime, *, cache=None) -> HotdataClient:
         retry_backoff_seconds=0.0,
     )
     client._runtime = runtime
-    if cache is not None:
-        client.bind_run_cache(cache)
+    if config is not None:
+        client.bind_run_cache(config)
     return client
 
 
-# --- resolution: collision-safe, id-addressed, resolve-once ---------------
+def _install_get_database(monkeypatch, registry: dict) -> None:
+    """Patch the id lookup (GET /databases/{id}); unknown ids 404."""
+
+    class FakeDatabasesApi:
+        def __init__(self, api):
+            pass
+
+        def get_database(self, database_id):
+            if database_id not in registry:
+                raise ApiException(status=404, reason="not found")
+            return registry[database_id]
+
+    monkeypatch.setattr("hotdata_dlt_destination.hotdata_client.DatabasesApi", FakeDatabasesApi)
+    monkeypatch.setattr(
+        "hotdata_dlt_destination.hotdata_client.managed_database_from_detail", lambda d: d
+    )
 
 
-def test_resolve_returns_single_match_by_name() -> None:
-    class FakeRuntime:
-        def list_managed_databases(self):
-            return [_db("db_1", "dlt")]
+class _Runtime:
+    """Fake runtime tracking managed-database lifecycle calls (no name lookups)."""
 
-        def close(self):
-            return None
+    api = None
 
-    client = _client(FakeRuntime())
-    assert client.resolve_managed_database("dlt").id == "db_1"
+    def __init__(self, existing_tables=()) -> None:
+        self._existing_tables = list(existing_tables)
+        self.created: list[tuple] = []
+        self.deleted: list[str] = []
+        self.added: list[tuple] = []
+        self.uploaded: list[str] = []
+        self.loaded: list[tuple] = []
+        self.table_lists = 0
+
+    def list_managed_tables(self, database, *, schema):
+        self.table_lists += 1
+        return [SimpleNamespace(table=t, synced=True) for t in self._existing_tables]
+
+    def add_managed_table(self, database, table, *, schema, key=None):
+        self.added.append((getattr(database, "id", database), table, schema))
+        self._existing_tables.append(table)
+        return SimpleNamespace(table=table, schema=schema)
+
+    def create_managed_database(self, *, description, schema, tables, keys=None):
+        self.created.append((description, schema, list(tables)))
+        return _db("new_db", description)
+
+    def delete_managed_database(self, db):
+        self.deleted.append(getattr(db, "id", db))
+
+    def upload_parquet(self, path):
+        self.uploaded.append(path)
+        return "up_1"
+
+    def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
+        db_id = getattr(database, "id", database)
+        self.loaded.append((db_id, table, schema, upload_id))
+        return SimpleNamespace(
+            connection_id="c",
+            schema_name=schema,
+            table_name=table,
+            row_count=1,
+            full_name=f"{db_id}.{schema}.{table}",
+        )
+
+    def close(self):
+        return None
+
+
+# --- create on first run (no database_id) ---------------------------------
+
+
+def test_create_when_no_id_configured() -> None:
+    rt = _Runtime()
+    client = _client(rt, config=_cfg(database_id=None, database_name="sales"))
+    db = client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=True)
+    # created, labelled by database_name; no read/list happened (nothing to reconcile)
+    assert rt.created == [("sales", "public", ["orders"])]
+    assert db.id == "new_db"
+    assert rt.table_lists == 0
     client.close()
 
 
-def test_resolve_by_id() -> None:
-    class FakeRuntime:
-        def list_managed_databases(self):
-            return [_db("db_1", "dlt")]
-
-        def close(self):
-            return None
-
-    client = _client(FakeRuntime())
-    assert client.resolve_managed_database("db_1").id == "db_1"
+def test_create_logs_new_id(monkeypatch) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(
+        "hotdata_dlt_destination.hotdata_client.logger.warning",
+        lambda msg, *args: messages.append(msg % args if args else msg),
+    )
+    rt = _Runtime()
+    client = _client(rt, config=_cfg(database_name="sales"))
+    client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=True)
+    # the id is surfaced for the user to pin via database_id
+    assert any("new_db" in m and "database_id" in m for m in messages)
     client.close()
 
 
-def test_resolve_missing_raises_keyerror() -> None:
-    class FakeRuntime:
-        def list_managed_databases(self):
-            return []
-
-        def close(self):
-            return None
-
-    client = _client(FakeRuntime())
+def test_no_id_and_no_create_raises_keyerror() -> None:
+    # is_storage_initialized() path: probe with create disabled and no id -> "not there".
+    rt = _Runtime()
+    client = _client(rt, config=_cfg(database_id=None))
     with pytest.raises(KeyError):
-        client.resolve_managed_database("dlt")
+        client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=False)
+    assert rt.created == []
     client.close()
 
 
-def test_resolve_raises_on_ambiguous_name() -> None:
-    # Hotdata names are not unique: >1 match must raise, never silently pick one.
-    class FakeRuntime:
-        def list_managed_databases(self):
-            return [_db("db_1", "dlt"), _db("db_2", "dlt")]
+# --- bind an existing database by id --------------------------------------
 
-        def close(self):
-            return None
 
-    client = _client(FakeRuntime())
-    with pytest.raises(HotdataTerminalError, match="ambiguous"):
-        client.resolve_managed_database("dlt")
+def test_bind_existing_by_id(monkeypatch) -> None:
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _Runtime(existing_tables=["orders", "customers"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+    db = client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=True)
+    # bound by id; not recreated
+    assert db.id == "db_1"
+    assert rt.created == []
     client.close()
 
 
-def test_resolves_once_and_reuses_run_cache() -> None:
-    # The name is resolved once per run; a second client sharing the cache reuses it.
-    class FakeRuntime:
-        def __init__(self):
-            self.list_calls = 0
+def test_bind_missing_id_raises_keyerror(monkeypatch) -> None:
+    _install_get_database(monkeypatch, {})  # id does not exist -> 404
+    rt = _Runtime()
+    client = _client(rt, config=_cfg(database_id="db_missing"))
+    with pytest.raises(KeyError):
+        client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=False)
+    assert rt.created == []
+    client.close()
 
-        def list_managed_databases(self):
-            self.list_calls += 1
-            return [_db("db_1", "dlt")]
 
-        def list_managed_tables(self, database, *, schema):
-            assert database == "db_1"  # addressed by id after the first resolve
-            return []
+def test_is_not_found_walks_cause_chain() -> None:
+    # A 404 buried under extra wrapping layers is still recognised, so the clear
+    # "database_id was dropped" message survives even if the framework nests errors.
+    from hotdata_dlt_destination.hotdata_client import _is_not_found
 
-        def close(self):
-            return None
+    inner = ApiException(status=404, reason="not found")
+    mid = HotdataTerminalError("wrapped")
+    mid.__cause__ = inner
+    outer = HotdataTerminalError("outer")
+    outer.__cause__ = mid
+    assert _is_not_found(outer) is True
 
-    rt = FakeRuntime()
-    cache = SimpleNamespace()
-    client = _client(rt, cache=cache)
-    client.resolve_managed_database("dlt")
-    client.list_managed_tables("dlt", schema="public")
+    non_404 = HotdataTerminalError("x")
+    non_404.__cause__ = ApiException(status=500, reason="boom")
+    assert _is_not_found(non_404) is False
 
-    client2 = _client(rt, cache=cache)
-    assert client2.resolve_managed_database("dlt").id == "db_1"
 
-    assert rt.list_calls == 1
-    assert cache._hotdata_resolved_db.id == "db_1"
+def test_bind_missing_id_with_create_raises_clear_error(monkeypatch) -> None:
+    # dev_mode/refresh drops the pinned db, then a create-path ensure finds the id
+    # gone. It can't be recreated (ids are server-assigned) -> clear terminal error,
+    # not a raw KeyError.
+    _install_get_database(monkeypatch, {})  # pinned id no longer exists -> 404
+    rt = _Runtime()
+    client = _client(rt, config=_cfg(database_id="db_dropped"))
+    with pytest.raises(HotdataTerminalError, match="db_dropped"):
+        client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=True)
+    assert rt.created == []  # never silently recreated
+    client.close()
+
+
+def test_bind_by_id_evolves_schema_in_place(monkeypatch) -> None:
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+    client.ensure_managed_database(
+        schema="public", tables=["orders", "customers"], create_if_missing=True
+    )
+    # the missing table is declared in place, addressed by the resolved id
+    assert rt.added == [("db_1", "customers", "public")]
+    assert rt.created == []
+    assert rt.deleted == []
+    client.close()
+
+
+# --- resolve-once / run cache (populated by id or create, never by name) --
+
+
+def test_resolves_once_and_reuses_run_cache(monkeypatch) -> None:
+    reads = {"n": 0}
+
+    class FakeDatabasesApi:
+        def __init__(self, api):
+            pass
+
+        def get_database(self, database_id):
+            reads["n"] += 1
+            return _db("db_1", "sales")
+
+    monkeypatch.setattr("hotdata_dlt_destination.hotdata_client.DatabasesApi", FakeDatabasesApi)
+    monkeypatch.setattr(
+        "hotdata_dlt_destination.hotdata_client.managed_database_from_detail", lambda d: d
+    )
+
+    cfg = _cfg(database_id="db_1")
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=cfg)
+    client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=True)
+    # a second client sharing the run config reuses the cached record
+    client2 = _client(_Runtime(existing_tables=["orders"]), config=cfg)
+    assert client2.resolved_database_id() == "db_1"
+    assert reads["n"] == 1  # bound exactly once for the run
+    assert cfg._hotdata_db.id == "db_1"
     client.close()
     client2.close()
 
 
-# --- upload / load: addressed by id ---------------------------------------
+# --- operations address the resolved record -------------------------------
 
 
-def test_upload_and_load_managed_table_addresses_by_id() -> None:
-    class FakeRuntime:
-        def __init__(self) -> None:
-            self.upload_calls = 0
-            self.load_database = None
-
-        def list_managed_databases(self):
-            return [_db("db_dlt", "dlt")]
-
-        def upload_parquet(self, path: str) -> str:
-            self.upload_calls += 1
-            assert path.endswith(".parquet")
-            return "upload_1"
-
-        def load_managed_table(
-            self, database, table, *, schema, upload_id, mode="replace", key=None
-        ):
-            self.load_database = database
-            return SimpleNamespace(
-                connection_id="conn_1",
-                schema_name=schema,
-                table_name=table,
-                row_count=1,
-                full_name=f"{database}.{schema}.{table}",
-            )
-
-        def close(self) -> None:
-            return None
-
-    rt = FakeRuntime()
-    client = _client(rt)
-
+def test_load_addresses_by_resolved_record(monkeypatch) -> None:
+    _install_get_database(monkeypatch, {"db_dlt": _db("db_dlt", "dlt")})
+    rt = _Runtime()
+    client = _client(rt, config=_cfg(database_id="db_dlt"))
     upload_id = client.upload_parquet("/tmp/batch.parquet")
-    loaded = client.load_managed_table("dlt", "orders", schema="public", upload_id=upload_id)
-
-    assert upload_id == "upload_1"
-    # the load is addressed by the resolved id, not the display name
-    assert rt.load_database == "db_dlt"
+    loaded = client.load_managed_table("orders", schema="public", upload_id=upload_id)
+    assert upload_id == "up_1"
+    assert rt.loaded == [("db_dlt", "orders", "public", "up_1")]
     assert loaded.full_name == "db_dlt.public.orders"
-    assert rt.upload_calls == 1
     client.close()
 
 
-# --- fetch_table / execute_sql: carry the database scope ------------------
+def test_list_managed_tables_by_id(monkeypatch) -> None:
+    _install_get_database(monkeypatch, {"db_1": _db("db_1")})
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+    tables = client.list_managed_tables(schema="public")
+    assert [t.table for t in tables] == ["orders"]
+    client.close()
 
 
 def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool) -> dict:
-    """Patch the query/result APIs so no real HTTP happens.
-
-    ``fetch_table`` resolves ArrowResultsApi from hotdata_framework.managed_client;
-    ``execute_sql`` resolves it from hotdata_dlt_destination.hotdata_client.
-    Returns a recorder of the ``x_database_id`` scopes each read carried.
-    """
     from hotdata.models.query_response import QueryResponse as _QR
 
     scopes: dict[str, list] = {"result": [], "arrow": []}
@@ -217,222 +307,120 @@ def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool
     return scopes
 
 
-def test_fetch_table_carries_database_scope(monkeypatch) -> None:
-    # Hosted result endpoints reject requests without the database scope;
-    # fetch_table (merge / state-sync read-back) must carry it on the result
-    # poll and the Arrow fetch, addressing by the resolved id.
-    import pyarrow as pa
-
-    scopes = _patch_query_apis(monkeypatch, pa.table({"id": [1]}), arrow_in_hotdata_client=False)
-
-    class FakeRuntime:
-        api = None
-
-        def list_managed_databases(self):
-            return [_db("db_42", "dlt")]
-
-        def list_managed_tables(self, database, *, schema):
-            assert database == "db_42"
-            return [SimpleNamespace(table="orders", synced=True)]
-
-        def close(self):
-            return None
-
-    client = _client(FakeRuntime())
-    table = client.fetch_table(database="dlt", schema="public", table="orders")
-    assert table is not None and table.num_rows == 1
-    assert scopes["result"] == ["db_42"]
-    assert scopes["arrow"] == ["db_42"]
-    client.close()
-
-
 def test_execute_sql_carries_database_scope(monkeypatch) -> None:
     import pyarrow as pa
 
+    _install_get_database(monkeypatch, {"db_99": _db("db_99")})
     scopes = _patch_query_apis(monkeypatch, pa.table({"id": [1, 2]}), arrow_in_hotdata_client=True)
 
-    class FakeRuntime:
-        api = None
-
-        def list_managed_databases(self):
-            return [_db("db_99", "dlt")]
-
-        def close(self):
-            return None
-
-    client = _client(FakeRuntime())
-    table = client.execute_sql('SELECT * FROM "default"."public"."spans"', database="dlt")
+    client = _client(_Runtime(), config=_cfg(database_id="db_99"))
+    table = client.execute_sql('SELECT * FROM "default"."public"."spans"')
     assert table.num_rows == 2
     assert scopes["result"] == ["db_99"]
     assert scopes["arrow"] == ["db_99"]
     client.close()
 
 
-def test_fetch_table_rows_skips_unsynced_tables() -> None:
-    class FakeRuntime:
-        def list_managed_databases(self):
-            return [_db("db_1", "dlt")]
+def test_fetch_table_carries_database_scope(monkeypatch) -> None:
+    import pyarrow as pa
 
+    _install_get_database(monkeypatch, {"db_42": _db("db_42")})
+    scopes = _patch_query_apis(monkeypatch, pa.table({"id": [1]}), arrow_in_hotdata_client=False)
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_42"))
+    table = client.fetch_table(schema="public", table="orders")
+    assert table is not None and table.num_rows == 1
+    assert scopes["result"] == ["db_42"]
+    assert scopes["arrow"] == ["db_42"]
+    client.close()
+
+
+def test_fetch_table_rows_skips_unsynced_tables(monkeypatch) -> None:
+    _install_get_database(monkeypatch, {"db_1": _db("db_1")})
+
+    class _Unsynced(_Runtime):
         def list_managed_tables(self, database, *, schema):
-            assert database == "db_1"
             return [SimpleNamespace(table="orders", synced=False)]
 
-        def close(self) -> None:
-            return None
-
-    client = _client(FakeRuntime())
-    rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
-    assert rows == []
+    client = _client(_Unsynced(), config=_cfg(database_id="db_1"))
+    assert client.fetch_table_rows(schema="public", table="orders") == []
     client.close()
 
 
-def test_fetch_table_rows_returns_empty_when_table_missing() -> None:
-    class FakeRuntime:
-        def list_managed_databases(self):
-            return [_db("db_1", "dlt")]
+# --- drop -----------------------------------------------------------------
 
-        def list_managed_tables(self, database, *, schema):
-            return []
 
-        def close(self) -> None:
-            return None
-
-    client = _client(FakeRuntime())
-    rows = client.fetch_table_rows(database="dlt", schema="public", table="orders")
-    assert rows == []
+def test_drop_deletes_by_id(monkeypatch) -> None:
+    _install_get_database(monkeypatch, {"db_1": _db("db_1")})
+    rt = _Runtime()
+    cfg = _cfg(database_id="db_1")
+    client = _client(rt, config=cfg)
+    client.drop_managed_database()
+    assert rt.deleted == ["db_1"]
+    assert cfg._hotdata_db is None
     client.close()
 
 
-# --- ensure_managed_database / drop_managed_database (schema evolution) ---
+def test_drop_noop_without_id() -> None:
+    rt = _Runtime()
+    client = _client(rt, config=_cfg(database_id=None))
+    client.drop_managed_database()
+    assert rt.deleted == []
+    client.close()
 
 
-class _EvoRuntime:
-    """Fake runtime tracking the managed-database lifecycle calls."""
+# --- #55: create/upload/query-scoped keys (forbidden reads) bootstrap ------
+# Under id-first there is no id to look up on a first run, so the create path
+# never issues a read the key isn't allowed to make -- create just succeeds.
 
-    def __init__(self, existing_db, existing_tables) -> None:
-        self._existing_db = existing_db  # _db(...) or None
-        self._existing_tables = list(existing_tables)
-        self.created: list[tuple] = []
-        self.deleted: list[str] = []
-        self.added: list[tuple] = []
-        self.uploaded: list[str] = []
-        self.loaded: list[tuple] = []
 
-    def list_managed_databases(self):
-        return [self._existing_db] if self._existing_db is not None else []
+class _CreateScopedRuntime(_Runtime):
+    """A create-scoped key: any read (get_database / list) is forbidden."""
 
     def list_managed_tables(self, database, *, schema):
-        return [SimpleNamespace(table=t) for t in self._existing_tables]
-
-    def add_managed_table(self, database, table, *, schema, key=None):
-        self.added.append((database, table, schema))
-        self._existing_tables.append(table)
-        return SimpleNamespace(table=table, schema=schema)
-
-    def create_managed_database(self, *, description, schema, tables, keys=None):
-        self.created.append((description, schema, list(tables)))
-        return _db("new_db", description)
-
-    def delete_managed_database(self, db_id):
-        self.deleted.append(db_id)
-
-    def upload_parquet(self, path):
-        self.uploaded.append(path)
-        return "up_1"
-
-    def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
-        self.loaded.append((database, table, schema, upload_id))
-        return SimpleNamespace()
-
-    def close(self):
-        return None
+        raise ForbiddenException(status=403, reason="ACCESS_DENIED")
 
 
-def test_ensure_creates_when_missing() -> None:
-    rt = _EvoRuntime(existing_db=None, existing_tables=[])
-    client = _client(rt)
-    client.ensure_managed_database("db", schema="public", tables=["orders"], create_if_missing=True)
-    assert rt.created == [("db", "public", ["orders"])]
-    assert rt.deleted == []
+def test_create_scoped_key_bootstraps_without_read(monkeypatch) -> None:
+    # get_database must never be called on the create path.
+    called = {"get": 0}
+
+    class FakeDatabasesApi:
+        def __init__(self, api):
+            pass
+
+        def get_database(self, database_id):
+            called["get"] += 1
+            raise ForbiddenException(status=403, reason="ACCESS_DENIED")
+
+    monkeypatch.setattr("hotdata_dlt_destination.hotdata_client.DatabasesApi", FakeDatabasesApi)
+
+    rt = _CreateScopedRuntime()
+    cfg = _cfg(database_id=None, database_name="dlt")
+    client = _client(rt, config=cfg)
+    db = client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=True)
+    assert rt.created == [("dlt", "public", ["orders"])]
+    assert db.id == "new_db"
+    assert called["get"] == 0  # never attempted a forbidden read
+    assert cfg._hotdata_db.id == "new_db"
     client.close()
 
 
-def test_ensure_raises_when_missing_and_no_create() -> None:
-    rt = _EvoRuntime(existing_db=None, existing_tables=[])
-    client = _client(rt)
-    with pytest.raises(KeyError):
-        client.ensure_managed_database(
-            "db", schema="public", tables=["orders"], create_if_missing=False
-        )
-    client.close()
+def test_create_scoped_load_reuses_cache_without_read(monkeypatch) -> None:
+    class FakeDatabasesApi:
+        def __init__(self, api):
+            pass
 
+        def get_database(self, database_id):
+            raise ForbiddenException(status=403, reason="ACCESS_DENIED")
 
-def test_ensure_noop_when_all_tables_present() -> None:
-    rt = _EvoRuntime(existing_db=_db("db_1", "db"), existing_tables=["orders", "customers"])
-    client = _client(rt)
-    client.ensure_managed_database("db", schema="public", tables=["orders"], create_if_missing=True)
-    assert rt.deleted == []
-    assert rt.created == []
-    assert rt.added == []
-    client.close()
+    monkeypatch.setattr("hotdata_dlt_destination.hotdata_client.DatabasesApi", FakeDatabasesApi)
 
-
-def test_ensure_adds_missing_table_without_recreate() -> None:
-    rt = _EvoRuntime(existing_db=_db("db_1", "db"), existing_tables=["orders"])
-    client = _client(rt)
-
-    client.ensure_managed_database(
-        "db", schema="public", tables=["orders", "customers"], create_if_missing=True
-    )
-
-    # The missing table is declared in place, addressed by the resolved id; the
-    # database is never deleted or recreated and no data is moved.
-    assert rt.added == [("db_1", "customers", "public")]
-    assert rt.deleted == []
-    assert rt.created == []
-    assert rt.uploaded == []
-    assert rt.loaded == []
-    client.close()
-
-
-def test_ensure_raises_on_ambiguous_name() -> None:
-    class _Ambiguous(_EvoRuntime):
-        def list_managed_databases(self):
-            return [_db("db_1", "db"), _db("db_2", "db")]
-
-    rt = _Ambiguous(existing_db=_db("db_1", "db"), existing_tables=[])
-    client = _client(rt)
-    with pytest.raises(HotdataTerminalError, match="ambiguous"):
-        client.ensure_managed_database(
-            "db", schema="public", tables=["orders"], create_if_missing=True
-        )
-    # never created a duplicate on the ambiguity
-    assert rt.created == []
-    client.close()
-
-
-def test_drop_managed_database_deletes_by_id_when_present() -> None:
-    rt = _EvoRuntime(existing_db=_db("db_1", "db"), existing_tables=[])
-    client = _client(rt)
-    client.drop_managed_database("db")
-    assert rt.deleted == ["db_1"]
-    client.close()
-
-
-def test_drop_managed_database_noop_when_absent() -> None:
-    rt = _EvoRuntime(existing_db=None, existing_tables=[])
-    client = _client(rt)
-    client.drop_managed_database("db")
-    assert rt.deleted == []
-    client.close()
-
-
-def test_drop_clears_run_cache() -> None:
-    rt = _EvoRuntime(existing_db=_db("db_1", "db"), existing_tables=[])
-    cache = SimpleNamespace()
-    client = _client(rt, cache=cache)
-    client.resolve_managed_database("db")
-    assert cache._hotdata_resolved_db.id == "db_1"
-    client.drop_managed_database("db")
-    assert cache._hotdata_resolved_db is None
+    rt = _CreateScopedRuntime()
+    cfg = _cfg(database_id=None, database_name="dlt")
+    client = _client(rt, config=cfg)
+    client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=True)
+    # a load in the same run resolves from cache and hands the record straight through
+    client.load_managed_table("orders", schema="public", upload_id="u1")
+    assert rt.loaded == [("new_db", "orders", "public", "u1")]
     client.close()
