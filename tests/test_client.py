@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 from hotdata.exceptions import ApiException, ForbiddenException
 
+from hotdata_dlt_destination.errors import HotdataTerminalError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 
 
@@ -155,6 +156,19 @@ def test_bind_missing_id_raises_keyerror(monkeypatch) -> None:
     with pytest.raises(KeyError):
         client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=False)
     assert rt.created == []
+    client.close()
+
+
+def test_bind_missing_id_with_create_raises_clear_error(monkeypatch) -> None:
+    # dev_mode/refresh drops the pinned db, then a create-path ensure finds the id
+    # gone. It can't be recreated (ids are server-assigned) -> clear terminal error,
+    # not a raw KeyError.
+    _install_get_database(monkeypatch, {})  # pinned id no longer exists -> 404
+    rt = _Runtime()
+    client = _client(rt, config=_cfg(database_id="db_dropped"))
+    with pytest.raises(HotdataTerminalError, match="db_dropped"):
+        client.ensure_managed_database(schema="public", tables=["orders"], create_if_missing=True)
+    assert rt.created == []  # never silently recreated
     client.close()
 
 

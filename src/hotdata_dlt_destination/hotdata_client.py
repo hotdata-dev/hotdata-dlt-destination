@@ -130,7 +130,21 @@ class HotdataClient(ManagedDatabaseClient):
         if db is None:
             database_id = self._configured_database_id()
             if database_id:
-                db = self._bind_by_id(database_id)
+                try:
+                    db = self._bind_by_id(database_id)
+                except KeyError:
+                    # A pinned id can't be recreated (ids are server-assigned), so
+                    # on the create path a missing id is a clear terminal error, not
+                    # a silent recreate. The probe path (create_if_missing=False, e.g.
+                    # is_storage_initialized) still gets the KeyError -> "not there".
+                    if create_if_missing:
+                        raise HotdataTerminalError(
+                            f"configured database_id {database_id!r} was not found "
+                            "(it may have been dropped). A managed database cannot be "
+                            "recreated with the same id -- unset database_id to create a "
+                            "new one, or pin an existing id."
+                        ) from None
+                    raise
                 created = False
                 self._cache_db(db, created=False)
             elif create_if_missing:

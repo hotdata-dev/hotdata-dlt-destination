@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-24
+
 ### Added
 
 - `database_id` param (`hotdata(database_id=...)`) / `HOTDATA_DATABASE_ID` env / `[destination.hotdata] database_id` config — target an existing managed database by id. On a first run with no id, the database is created by its `database_name` label and the **new id is logged** so it can be pinned (`created managed database <id> … set database_id=<id> …`) to reuse the same database on subsequent runs.
