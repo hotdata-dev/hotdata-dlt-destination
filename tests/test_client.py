@@ -159,6 +159,23 @@ def test_bind_missing_id_raises_keyerror(monkeypatch) -> None:
     client.close()
 
 
+def test_is_not_found_walks_cause_chain() -> None:
+    # A 404 buried under extra wrapping layers is still recognised, so the clear
+    # "database_id was dropped" message survives even if the framework nests errors.
+    from hotdata_dlt_destination.hotdata_client import _is_not_found
+
+    inner = ApiException(status=404, reason="not found")
+    mid = HotdataTerminalError("wrapped")
+    mid.__cause__ = inner
+    outer = HotdataTerminalError("outer")
+    outer.__cause__ = mid
+    assert _is_not_found(outer) is True
+
+    non_404 = HotdataTerminalError("x")
+    non_404.__cause__ = ApiException(status=500, reason="boom")
+    assert _is_not_found(non_404) is False
+
+
 def test_bind_missing_id_with_create_raises_clear_error(monkeypatch) -> None:
     # dev_mode/refresh drops the pinned db, then a create-path ensure finds the id
     # gone. It can't be recreated (ids are server-assigned) -> clear terminal error,

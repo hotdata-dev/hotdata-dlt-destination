@@ -11,8 +11,21 @@ from hotdata_dlt_destination.errors import HotdataTerminalError
 
 
 def _is_not_found(exc: Exception) -> bool:
-    """True when ``exc`` wraps a 404 (the bound database id does not exist)."""
-    return getattr(getattr(exc, "__cause__", None), "status", None) == 404
+    """True when ``exc`` or anything in its ``__cause__`` chain wraps a 404.
+
+    The framework raises the mapped error ``from`` the underlying ``ApiException``,
+    so today the 404 sits one level down -- but it walks the whole chain (mirroring
+    ``sql_client._chain_messages``) so a dropped-id 404 is still recognised if the
+    framework ever wraps ``get_database`` errors in an extra layer.
+    """
+    current: BaseException | None = exc
+    for _ in range(6):
+        if current is None:
+            break
+        if getattr(current, "status", None) == 404:
+            return True
+        current = current.__cause__
+    return False
 
 
 class HotdataClient(ManagedDatabaseClient):
