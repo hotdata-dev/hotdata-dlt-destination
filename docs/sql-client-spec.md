@@ -456,6 +456,10 @@ info = pipe.run(spans())
 print(info)
 
 # 2) READ   (unlocked by this spec)
+#    NOTE (id-first, 0.11.0): reads resolve the managed DB by id. In a single
+#    process the read needs a database_id — pin the id logged on the first-run
+#    create above via hotdata(database_id="db_..."). Without it the read raises
+#    "no managed database resolved". See README "Read your data back".
 ds = pipe.dataset()
 print(ds.table("spans").df())                                          # full table
 print(ds("SELECT model, avg(latency_ms) AS p FROM spans GROUP BY model").df())  # aggregate
