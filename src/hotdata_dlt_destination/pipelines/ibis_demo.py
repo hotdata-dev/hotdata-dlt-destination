@@ -84,12 +84,18 @@ def _read_with_ibis(pipeline: dlt.Pipeline) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Load NYC taxi trips and read via ibis.")
     parser.add_argument("--workspace-id", required=True, help="Hotdata workspace id")
+    parser.add_argument(
+        "--database-id",
+        default=None,
+        help="Existing managed database id (omit to create a new one by name)",
+    )
     args = parser.parse_args()
     pipeline = dlt.pipeline(
         pipeline_name="ibis_demo",
         destination=hotdata(
             credentials=HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"]),
             workspace_id=args.workspace_id,
+            database_id=args.database_id,
             api_base_url=os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev"),
             write_disposition="replace",
             declared_tables=["trips"],

@@ -1,94 +1,121 @@
 from __future__ import annotations
 
 import pyarrow as pa
+from dlt.common import logger
+from hotdata.api.databases_api import DatabasesApi
 from hotdata.arrow import ResultsApi as ArrowResultsApi
-from hotdata_framework.databases import ManagedDatabase
+from hotdata_framework.databases import ManagedDatabase, managed_database_from_detail
 from hotdata_framework.managed_client import ManagedDatabaseClient
 
 from hotdata_dlt_destination.errors import HotdataTerminalError
 
 
-def _is_forbidden(exc: Exception) -> bool:
-    """True when ``exc`` wraps a 403 (create-scoped keys can't read /databases)."""
-    return getattr(getattr(exc, "__cause__", None), "status", None) == 403
+def _is_not_found(exc: Exception) -> bool:
+    """True when ``exc`` wraps a 404 (the bound database id does not exist)."""
+    return getattr(getattr(exc, "__cause__", None), "status", None) == 404
 
 
 class HotdataClient(ManagedDatabaseClient):
     """Managed-database client used by the dlt destination.
 
-    Adds two things on top of the shared ``hotdata_framework`` client:
+    Addressing is **id-first**: a Hotdata database is identified by its id, never
+    by name. The name (``description``) is only a display label supplied when a
+    database is created — it is never used to look one up, because Hotdata names
+    are not unique. Concretely:
 
-    * **Cross-run schema evolution** — when a later run requires a table the
-      database is missing, the table is declared in place via
-      ``add_managed_table`` (added empty, populated by the subsequent load); no
-      data is moved and existing tables, including dlt's ``_dlt_version`` /
-      ``_dlt_loads`` / ``_dlt_pipeline_state`` bookkeeping, are left untouched.
-    * **Collision-safe, resolve-once addressing** — a database name is resolved
-      to its record once per run (cached via :meth:`bind_run_cache`) and every
-      subsequent operation addresses the database by id. Resolution raises on an
-      ambiguous name instead of silently taking the first match.
+    * **Bind an existing database by id.** When a ``database_id`` is configured,
+      the record is fetched once via ``GET /databases/{id}`` and every operation
+      addresses the database by that record. No listing, no name scan.
+    * **Create on first run.** With no ``database_id`` and ``create_if_missing``,
+      the database is created (labelled with ``database_name``) and its new id is
+      logged so it can be pinned via ``database_id`` for subsequent runs.
+    * **Cross-run schema evolution.** When binding an existing database, tables it
+      is missing are declared in place via ``add_managed_table`` (added empty,
+      populated by the subsequent load); no data is moved and existing tables,
+      including dlt's ``_dlt_version`` / ``_dlt_loads`` / ``_dlt_pipeline_state``
+      bookkeeping, are left untouched.
+
+    The resolved record is cached once per run (via :meth:`bind_run_cache`) so the
+    whole run reuses a single bind/create and create-scoped keys never issue a read
+    they are not permitted to make.
     """
 
-    # Run-scoped store bound via bind_run_cache(); resolution is cached on it so
-    # the whole run reuses one resolved/created record.
-    _run_cache: object | None = None
+    # Run-scoped configuration bound via bind_run_cache(); the resolved database
+    # and its provenance are cached on it so the whole run reuses one record.
+    _config: object | None = None
 
     def bind_run_cache(self, cache: object) -> None:
-        """Bind a run-scoped store so a database resolves to its record once.
+        """Bind the run's shared configuration.
 
-        ``cache`` is any object that tolerates a ``_hotdata_resolved_db``
-        attribute — in practice the shared ``HotdataClientConfiguration``
-        instance, which every client built for a run points at.
+        ``cache`` is the shared ``HotdataClientConfiguration`` instance every
+        client built for a run points at. Its ``database_id`` / ``database_name``
+        drive id-first resolution, and the resolved record is cached back on it
+        (``_hotdata_db``) so a single run resolves the database exactly once.
         """
-        self._run_cache = cache
+        self._config = cache
 
-    # --- resolution -------------------------------------------------------
+    # --- run cache --------------------------------------------------------
 
-    def _collision_safe_resolve(self, name_or_id: str) -> ManagedDatabase:
-        """Resolve a name/id to its record, raising on an ambiguous name.
+    def _cached_db(self) -> ManagedDatabase | None:
+        return getattr(self._config, "_hotdata_db", None) if self._config is not None else None
 
-        Hotdata database names are not unique. Taking the first match can read,
-        write, or drop the wrong database, so a name that matches more than one
-        database raises instead. An id (matched exactly) is unambiguous.
+    def _cache_db(self, db: ManagedDatabase | None, *, created: bool) -> None:
+        if self._config is not None:
+            self._config._hotdata_db = db
+            self._config._hotdata_db_created = created
+
+    def _was_created(self) -> bool:
+        return bool(getattr(self._config, "_hotdata_db_created", False))
+
+    # --- resolution (id-first, never by name) -----------------------------
+
+    def _bind_by_id(self, database_id: str) -> ManagedDatabase:
+        """Fetch a database record by id (``GET /databases/{id}``).
+
+        Raises ``KeyError`` when the id does not exist (404); other API errors
+        propagate as ``HotdataTerminalError``/``HotdataTransientError``.
         """
-        databases = self._request_with_retry(self._runtime.list_managed_databases)
-        by_name = [db for db in databases if db.description == name_or_id]
-        if len(by_name) > 1:
-            raise HotdataTerminalError(
-                f"Managed database name {name_or_id!r} is ambiguous: "
-                f"{len(by_name)} databases share it (ids: {sorted(db.id for db in by_name)}). "
-                "Address it by id to disambiguate."
+        try:
+            detail = self._request_with_retry(
+                lambda: DatabasesApi(self._runtime.api).get_database(database_id)
             )
-        if by_name:
-            return by_name[0]
-        by_id = [db for db in databases if db.id == name_or_id]
-        if by_id:
-            return by_id[0]
-        raise KeyError(name_or_id)
+        except HotdataTerminalError as exc:
+            if _is_not_found(exc):
+                raise KeyError(database_id) from exc
+            raise
+        return managed_database_from_detail(detail)
 
-    def _resolve(self, name_or_id: str) -> ManagedDatabase:
-        """Resolve once per run, then serve the cached (id-addressable) record."""
-        cache = self._run_cache
-        if cache is not None:
-            cached = getattr(cache, "_hotdata_resolved_db", None)
-            if cached is not None and name_or_id in (
-                cached.id,
-                getattr(cached, "description", None),
-            ):
-                return cached
-        db = self._collision_safe_resolve(name_or_id)
-        self._cache_db(db)
-        return db
+    def _configured_database_id(self) -> str | None:
+        return getattr(self._config, "database_id", None)
 
-    def _cache_db(self, db: ManagedDatabase | None) -> None:
-        if self._run_cache is not None:
-            self._run_cache._hotdata_resolved_db = db
+    def _require_db(self) -> ManagedDatabase:
+        """Resolve the run's database for an operation (id-first).
+
+        Reuses the run cache, else binds the configured ``database_id``. Raises
+        ``KeyError`` when no database has been resolved and none is configured —
+        there is deliberately no by-name fallback.
+        """
+        db = self._cached_db()
+        if db is not None:
+            return db
+        database_id = self._configured_database_id()
+        if database_id:
+            db = self._bind_by_id(database_id)
+            self._cache_db(db, created=False)
+            return db
+        raise KeyError("no managed database resolved for this run (set database_id)")
+
+    def resolved_database_id(self) -> str:
+        """Return the id of the run's managed database (bound by id or created).
+
+        Raises ``KeyError`` when none is configured and none was created this run.
+        """
+        return self._require_db().id
 
     # --- lifecycle --------------------------------------------------------
 
     def ensure_managed_database(
         self,
-        name: str,
         *,
         schema: str,
         tables: list[str],
@@ -98,19 +125,55 @@ class HotdataClient(ManagedDatabaseClient):
         # keys: table name -> key columns (enables delete/update/upsert on it)
         keys = keys or {}
 
-        try:
-            db = self._resolve(name)
-        except KeyError:
-            if not create_if_missing:
-                raise
-            return self._create_and_cache(name, schema=schema, tables=tables, keys=keys)
-        except HotdataTerminalError as exc:
-            # A create/upload/query-scoped key is forbidden from reading /databases,
-            # so it can't check existence; attempt the create it is permitted to make.
-            if not (create_if_missing and _is_forbidden(exc)):
-                raise
-            return self._create_and_cache(name, schema=schema, tables=tables, keys=keys)
+        db = self._cached_db()
+        created = self._was_created()
+        if db is None:
+            database_id = self._configured_database_id()
+            if database_id:
+                db = self._bind_by_id(database_id)
+                created = False
+                self._cache_db(db, created=False)
+            elif create_if_missing:
+                db = self._create(schema=schema, tables=tables, keys=keys)
+                created = True
+                self._cache_db(db, created=True)
+            else:
+                raise KeyError("no managed database resolved for this run (set database_id)")
 
+        # A freshly created database already declared every table; only an
+        # existing (bound) database needs additive, in-place schema evolution.
+        if not created:
+            self._reconcile_tables(db, schema=schema, tables=tables, keys=keys)
+        return db
+
+    def _create(
+        self, *, schema: str, tables: list[str], keys: dict[str, list[str]]
+    ) -> ManagedDatabase:
+        description = getattr(self._config, "database_name", None)
+        db = self._request_with_retry(
+            lambda: self._runtime.create_managed_database(
+                description=description, schema=schema, tables=sorted(set(tables)), keys=keys
+            )
+        )
+        # Logged at WARNING (dlt's default level) so the new id is always visible:
+        # without pinning it via database_id, the next run creates another database.
+        logger.warning(
+            "hotdata: created managed database %s (name=%r). Pin it for future runs by "
+            "setting database_id=%s (HOTDATA_DATABASE_ID / [destination.hotdata] database_id).",
+            db.id,
+            description,
+            db.id,
+        )
+        return db
+
+    def _reconcile_tables(
+        self,
+        db: ManagedDatabase,
+        *,
+        schema: str,
+        tables: list[str],
+        keys: dict[str, list[str]],
+    ) -> None:
         existing = {
             managed_table.table
             for managed_table in self._request_with_retry(
@@ -122,22 +185,10 @@ class HotdataClient(ManagedDatabaseClient):
         # load job runs, so by load time this is normally a no-op.
         for table in sorted(set(tables) - existing):
             self._add_managed_table(db, table, schema=schema, key=keys.get(table))
-        return db
-
-    def _create_and_cache(
-        self, name: str, *, schema: str, tables: list[str], keys: dict[str, list[str]]
-    ) -> ManagedDatabase:
-        db = self._request_with_retry(
-            lambda: self._runtime.create_managed_database(
-                description=name, schema=schema, tables=sorted(set(tables)), keys=keys
-            )
-        )
-        self._cache_db(db)
-        return db
 
     def _add_managed_table(
         self,
-        database: str | ManagedDatabase,
+        database: ManagedDatabase,
         table: str,
         *,
         schema: str,
@@ -147,41 +198,40 @@ class HotdataClient(ManagedDatabaseClient):
             lambda: self._runtime.add_managed_table(database, table, schema=schema, key=key)
         )
 
-    def drop_managed_database(self, name: str) -> None:
-        """Delete the managed database if it exists (used for dlt dev_mode / refresh)."""
-        try:
-            db = self._resolve(name)
-        except KeyError:
-            return
+    def drop_managed_database(self) -> None:
+        """Delete the run's managed database if it exists (used for dlt dev_mode / refresh)."""
+        db = self._cached_db()
+        if db is None:
+            database_id = self._configured_database_id()
+            if not database_id:
+                return
+            try:
+                db = self._bind_by_id(database_id)
+            except KeyError:
+                return
         self._request_with_retry(lambda: self._runtime.delete_managed_database(db))
-        self._cache_db(None)
+        self._cache_db(None, created=False)
 
-    def resolve_managed_database(self, name: str) -> ManagedDatabase:
-        """Resolve a managed database by display name (or id) to its record.
+    # --- operations (addressed by the resolved record) --------------------
 
-        Raises ``KeyError`` when nothing matches and ``HotdataTerminalError`` when
-        the name is shared by more than one database.
-        """
-        return self._resolve(name)
-
-    def load_managed_table(self, database: str, table: str, **kwargs):
+    def load_managed_table(self, table: str, **kwargs):
         """Load parquet into a managed table via the resolved database record.
 
         Passing the resolved ``ManagedDatabase`` (not its id) lets a create-scoped
         key load without a further read probe (framework passthrough)."""
-        db = self._resolve(database)
+        db = self._require_db()
         return super().load_managed_table(db, table, **kwargs)
 
-    def execute_sql(self, sql: str, *, database: str) -> pa.Table:
-        """Run a SQL query scoped to ``database`` and return the result as Arrow.
+    def execute_sql(self, sql: str) -> pa.Table:
+        """Run a SQL query scoped to the run's database and return Arrow.
 
-        Resolves the managed database to its id (once per run), submits the query,
-        polls until the result is ready, and fetches it as a ``pyarrow.Table``. An
-        empty table is returned when the query produces no out-of-band result.
+        Submits the query, polls until the result is ready, and fetches it as a
+        ``pyarrow.Table``. An empty table is returned when the query produces no
+        out-of-band result.
         """
 
         def operation() -> pa.Table:
-            db = self._resolve(database)
+            db = self._require_db()
             result_id = self._query_database_scoped(sql, database_id=db.id)
             if result_id is None:
                 return pa.table({})
@@ -193,25 +243,16 @@ class HotdataClient(ManagedDatabaseClient):
 
         return self._request_with_retry(operation)
 
-    def list_managed_tables(self, database: str, *, schema: str) -> list:
-        """List the managed tables in ``database``/``schema`` (used by ``has_dataset``)."""
-        db = self._resolve(database)
+    def list_managed_tables(self, *, schema: str) -> list:
+        """List the managed tables in the run's database/``schema`` (used by ``has_dataset``)."""
+        db = self._require_db()
         return self._request_with_retry(
             lambda: self._runtime.list_managed_tables(db, schema=schema)
         )
 
-    def table_is_synced(self, database: str, table: str, *, schema: str) -> bool:
-        db = self._resolve(database)
-        for managed_table in self._request_with_retry(
-            lambda: self._runtime.list_managed_tables(db, schema=schema)
-        ):
-            if managed_table.table == table:
-                return managed_table.synced
-        return False
-
-    def fetch_table(self, *, database: str, schema: str, table: str) -> pa.Table | None:
+    def fetch_table(self, *, schema: str, table: str) -> pa.Table | None:
         def operation() -> pa.Table | None:
-            db = self._resolve(database)
+            db = self._require_db()
             if not self._table_is_synced_for(db, table, schema=schema):
                 return None
             sql = f'SELECT * FROM "default"."{schema}"."{table}"'
@@ -221,6 +262,10 @@ class HotdataClient(ManagedDatabaseClient):
             return self._fetch_result_arrow(result_id, database_id=db.id)
 
         return self._request_with_retry(operation)
+
+    def fetch_table_rows(self, *, schema: str, table: str) -> list[dict]:
+        result = self.fetch_table(schema=schema, table=table)
+        return result.to_pylist() if result is not None else []
 
     def _table_is_synced_for(self, db: ManagedDatabase, table: str, *, schema: str) -> bool:
         for managed_table in self._runtime.list_managed_tables(db, schema=schema):

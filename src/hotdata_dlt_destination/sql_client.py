@@ -200,7 +200,7 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
             raise DatabaseTerminalException(
                 NotImplementedError("HotdataSqlClient does not support parameterized queries")
             )
-        table = self._client.execute_sql(query, database=self.database_name)
+        table = self._client.execute_sql(query)
         yield HotdataCursor(table)
 
     def execute_sql(
@@ -246,7 +246,7 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
         # Check via the managed-DB API rather than the base's INFORMATION_SCHEMA.SCHEMATA
         # query (which binds %s params our query API can't take).
         try:
-            self._client.list_managed_tables(self.database_name, schema=self.dataset_name)
+            self._client.list_managed_tables(schema=self.dataset_name)
             return True
         except (KeyError, HotdataTerminalError, HotdataTransientError):
             return False

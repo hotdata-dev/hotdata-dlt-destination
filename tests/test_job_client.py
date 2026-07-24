@@ -34,17 +34,17 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
         def bind_run_cache(self, cache: object) -> None:
             return None
 
-        def ensure_managed_database(self, name, *, schema, tables, keys=None, create_if_missing):
+        def ensure_managed_database(self, *, schema, tables, keys=None, create_if_missing):
             return SimpleNamespace(id="db_1")
 
-        def fetch_table(self, *, database, schema, table):
+        def fetch_table(self, *, schema, table):
             return store.get(table)
 
         def upload_parquet(self, path: str) -> str:
             self._pending = pq.read_table(path)
             return "upload_1"
 
-        def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
+        def load_managed_table(self, table, *, schema, upload_id, mode="replace", key=None):
             assert self._pending is not None
             # Mode-faithful, like the server: append accumulates, replace overwrites.
             existing = store.get(table)
@@ -54,7 +54,7 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
                 )
             else:
                 store[table] = self._pending
-            return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
+            return SimpleNamespace(full_name=f"db_1.{schema}.{table}")
 
         def close(self) -> None:
             return None
@@ -202,18 +202,18 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
         def bind_run_cache(self, cache: object) -> None:
             return None
 
-        def ensure_managed_database(self, name, *, schema, tables, keys=None, create_if_missing):
+        def ensure_managed_database(self, *, schema, tables, keys=None, create_if_missing):
             calls["keys"] = keys
             return SimpleNamespace(id="db_1")
 
-        def fetch_table(self, *, database, schema, table):
+        def fetch_table(self, *, schema, table):
             calls["fetches"] = calls.get("fetches", 0) + 1
 
         def upload_parquet(self, path: str) -> str:
             self._pending = pq.read_table(path)
             return "upload_1"
 
-        def load_managed_table(self, database, table, *, schema, upload_id, mode="replace", key=None):
+        def load_managed_table(self, table, *, schema, upload_id, mode="replace", key=None):
             calls.setdefault("modes", []).append(mode)
             calls["mode"] = mode
             calls["load_key"] = key
@@ -225,7 +225,7 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
             )
             if reject_mode is not None and mode == reject_mode:
                 raise HotdataTerminalError(f"{table}: no declared key; required for mode={mode}")
-            return SimpleNamespace(full_name=f"{database}.{schema}.{table}")
+            return SimpleNamespace(full_name=f"db_1.{schema}.{table}")
 
         def close(self) -> None:
             return None
@@ -496,8 +496,8 @@ def test_is_storage_initialized_false_when_missing(monkeypatch) -> None:
         def bind_run_cache(self, cache: object) -> None:
             return None
 
-        def ensure_managed_database(self, name, *, schema, tables, keys=None, create_if_missing):
-            raise KeyError(name)
+        def ensure_managed_database(self, *, schema, tables, keys=None, create_if_missing):
+            raise KeyError("db_1")
 
         def close(self) -> None:
             return None

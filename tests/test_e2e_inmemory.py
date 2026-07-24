@@ -19,6 +19,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from dlt.common.schema import Schema
+from hotdata.exceptions import ApiException
 from hotdata.models.query_response import QueryResponse
 
 import hotdata_dlt_destination.job_client as jc
@@ -49,17 +50,15 @@ class InMemoryBackend:
     def close(self) -> None:
         pass
 
-    def resolve_managed_database(self, name_or_id):
-        name = self.id_to_name.get(name_or_id, name_or_id)
-        if name not in self.name_to_id:
-            raise KeyError(name)
-        return SimpleNamespace(id=self.name_to_id[name], default_connection_id="conn")
-
-    def list_managed_databases(self):
-        return [
-            SimpleNamespace(id=db_id, description=name, default_connection_id="conn")
-            for name, db_id in self.name_to_id.items()
-        ]
+    def get_database(self, database_id):
+        # id-first bind: GET /databases/{id}; unknown id 404s.
+        if database_id not in self.id_to_name:
+            raise ApiException(status=404, reason="not found")
+        return SimpleNamespace(
+            id=database_id,
+            description=self.id_to_name[database_id],
+            default_connection_id="conn",
+        )
 
     def list_managed_tables(self, database, *, schema=None):
         database = getattr(database, "id", database)  # accept a resolved ManagedDatabase or id/name
@@ -234,6 +233,16 @@ class _E2EClient(RealHotdataClient):
         self._runtime = _ACTIVE["backend"]
 
 
+class _FakeDatabasesApi:
+    """Routes the id-first bind (GET /databases/{id}) to the active backend."""
+
+    def __init__(self, api):
+        pass
+
+    def get_database(self, database_id):
+        return _ACTIVE["backend"].get_database(database_id)
+
+
 @pytest.fixture
 def backend(monkeypatch):
     be = InMemoryBackend()
@@ -241,9 +250,14 @@ def backend(monkeypatch):
     monkeypatch.setattr(mc, "QueryApi", _FakeQueryApi)
     monkeypatch.setattr(mc, "ResultsApi", _FakeResultsApi)
     monkeypatch.setattr(mc, "ArrowResultsApi", _FakeArrowResultsApi)
-    # hotdata_client.py also references ArrowResultsApi (for execute_sql).
+    # hotdata_client.py also references ArrowResultsApi (for execute_sql) and
+    # DatabasesApi (for the id-first bind).
     monkeypatch.setattr(
         "hotdata_dlt_destination.hotdata_client.ArrowResultsApi", _FakeArrowResultsApi
+    )
+    monkeypatch.setattr("hotdata_dlt_destination.hotdata_client.DatabasesApi", _FakeDatabasesApi)
+    monkeypatch.setattr(
+        "hotdata_dlt_destination.hotdata_client.managed_database_from_detail", lambda d: d
     )
     monkeypatch.setattr(jc, "HotdataClient", _E2EClient)
     monkeypatch.setattr(sc, "HotdataClient", _E2EClient)
@@ -252,9 +266,19 @@ def backend(monkeypatch):
 
 
 def _dest(database_name, declared_tables, write_disposition="append"):
+    # id-first: a managed database is addressed by id. Model the real workflow —
+    # the database exists (created once) and the pipeline pins its id — by
+    # creating it up front and binding by id. `database_name` stays the label.
+    be = _ACTIVE["backend"]
+    database_id = be.name_to_id.get(database_name)
+    if database_id is None:
+        database_id = be.create_managed_database(
+            description=database_name, schema="public", tables=[]
+        ).id
     return hotdata(
         credentials=HotdataCredentials(api_key="test"),
         workspace_id="ws_test",
+        database_id=database_id,
         database_name=database_name,
         declared_tables=declared_tables,
         write_disposition=write_disposition,
@@ -278,6 +302,32 @@ def test_load_replace_and_bookkeeping(backend, tmp_path):
     assert "_dlt_id" in rows[0] and "_dlt_load_id" in rows[0]
     assert backend.rows("e2e_basic", "_dlt_loads") is not None
     assert backend.rows("e2e_basic", "_dlt_version") is not None
+
+
+def test_auto_create_when_no_database_id(backend, tmp_path):
+    # First run with no database_id: the pipeline creates the managed database by
+    # its name (label) and addresses it by the returned id for the rest of the run.
+    @dlt.resource(name="orders", write_disposition="replace")
+    def orders():
+        yield [{"id": 1, "amount": 10}]
+
+    dlt.pipeline(
+        pipeline_name="p_autocreate",
+        destination=hotdata(
+            credentials=HotdataCredentials(api_key="test"),
+            workspace_id="ws_test",
+            database_name="e2e_autocreate",
+            declared_tables=["orders"],
+            write_disposition="replace",
+        ),
+        dataset_name="public",
+        pipelines_dir=str(tmp_path),
+    ).run(orders())
+
+    # Exactly one database was created, under the given label.
+    assert set(backend.name_to_id) == {"e2e_autocreate"}
+    rows = backend.rows("e2e_autocreate", "orders")
+    assert rows is not None and len(rows) == 1
 
 
 def test_replace_multi_file_pipeline_keeps_all_rows(backend, tmp_path, monkeypatch):
@@ -375,6 +425,7 @@ def test_state_sync_roundtrip(backend, tmp_path):
     cfg = HotdataClientConfiguration(
         credentials=HotdataCredentials(api_key="test"),
         workspace_id="ws_test",
+        database_id=backend.name_to_id["e2e_state"],
         database_name="e2e_state",
         schema="public",
     )

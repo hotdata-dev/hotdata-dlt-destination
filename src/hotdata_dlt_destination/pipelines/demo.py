@@ -90,6 +90,12 @@ def macro_wide_resource():
 def main() -> None:
     parser = argparse.ArgumentParser(description="Load FRED macro indicators into Hotdata.")
     parser.add_argument("--workspace-id", required=True, help="Hotdata workspace id")
+    parser.add_argument(
+        "--database-id",
+        default=None,
+        help="Existing managed database id to load into (printed on first-run create; "
+        "omit to create a new database by name)",
+    )
     args = parser.parse_args()
     all_tables = ["macro_indicators_raw", "macro_wide"]
 
@@ -98,6 +104,7 @@ def main() -> None:
         destination=hotdata(
             credentials=HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"]),
             workspace_id=args.workspace_id,
+            database_id=args.database_id,
             api_base_url=os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev"),
             write_disposition="replace",
             declared_tables=all_tables,

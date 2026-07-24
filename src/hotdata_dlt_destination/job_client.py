@@ -145,7 +145,6 @@ def _truncate_table(
         write_table_parquet(arrow_schema.empty_table(), parquet_path)
         upload_id = api.upload_parquet(parquet_path)
         api.load_managed_table(
-            config.database_name,
             table_name,
             schema=config.schema,
             upload_id=upload_id,
@@ -167,7 +166,6 @@ def _upload_table(
         write_table_parquet(arrow_table, parquet_path)
         upload_id = api.upload_parquet(parquet_path)
         api.load_managed_table(
-            config.database_name,
             table_name,
             schema=config.schema,
             upload_id=upload_id,
@@ -237,7 +235,6 @@ class HotdataLoadJob(RunnableLoadJob):
                 write_table_parquet(upload_table, parquet_path)
                 upload_id = api.upload_parquet(parquet_path)
                 api.load_managed_table(
-                    contract.database_name,
                     contract.table_name,
                     schema=contract.schema,
                     upload_id=upload_id,
@@ -254,7 +251,6 @@ class HotdataLoadJob(RunnableLoadJob):
             api: HotdataClient, combine_disposition: str, *, apply_hard_delete: bool = False
         ) -> None:
             existing = api.fetch_table(
-                database=contract.database_name,
                 schema=contract.schema,
                 table=contract.table_name,
             )
@@ -271,7 +267,6 @@ class HotdataLoadJob(RunnableLoadJob):
         try:
             with _hotdata_api(self._config) as api:
                 api.ensure_managed_database(
-                    contract.database_name,
                     schema=contract.schema,
                     tables=_declared_tables(
                         contract=contract,
@@ -364,7 +359,7 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
 
         if self._sql_client is None:
             self._sql_client = HotdataSqlClient(
-                self.config.database_name,
+                self.config.database_id or self.config.database_name,
                 self.config.schema,
                 self.capabilities,
                 self.config,
@@ -398,7 +393,6 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         try:
             with _hotdata_api(self.config) as api:
                 api.ensure_managed_database(
-                    self.config.database_name,
                     schema=self.config.schema,
                     tables=all_tables,
                     keys=keys,
@@ -437,7 +431,6 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         with _hotdata_api(self.config) as api:
             try:
                 api.ensure_managed_database(
-                    self.config.database_name,
                     schema=self.config.schema,
                     tables=[],
                     create_if_missing=False,
@@ -452,7 +445,7 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         # recreates it on the next run.
         try:
             with _hotdata_api(self.config) as api:
-                api.drop_managed_database(self.config.database_name)
+                api.drop_managed_database()
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
 
@@ -549,7 +542,6 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         with _hotdata_api(self.config) as api:
             try:
                 table = api.fetch_table(
-                    database=self.config.database_name,
                     schema=self.config.schema,
                     table=table_name,
                 )
