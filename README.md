@@ -6,7 +6,7 @@
 [![dlt](https://img.shields.io/badge/dlt-1.28-blue.svg)](https://dlthub.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Load data into [Hotdata](https://hotdata.dev) managed databases using [dlt](https://dlthub.com) — then read it back through the same pipeline.
+Load data into [Hotdata](https://hotdata.dev) managed databases using [dlt](https://dlthub.com) — then read it back through dlt's standard dataset interface.
 
 dlt handles extraction, schema inference, and batching. This package is a **native dlt destination** (`JobClientBase` + `WithStateSync` + `WithSqlClient`) for the Hotdata side: it uploads each batch as Parquet, registers it with your managed database, syncs pipeline state so incremental sources resume, and exposes a server-side read API.
 
@@ -98,9 +98,17 @@ Managed databases are addressed by id — Hotdata database names are not unique,
 
 ## Read your data back
 
-The **same `pipeline` object** that writes can read, through dlt's standard [dataset interface](https://dlthub.com/docs/general-usage/dataset-access/dataset) — no Hotdata-specific code, no database IDs, no hand-written SQL:
+Reads address the managed database by **id** (names aren't identifiers), so point the reading pipeline at the `database_id` you pinned after the first load (see [Quickstart](#quickstart)). Then dlt's standard [dataset interface](https://dlthub.com/docs/general-usage/dataset-access/dataset) reads it back — no Hotdata-specific code, no hand-written SQL:
 
 ```python
+pipeline = dlt.pipeline(
+    pipeline_name="my_pipeline",
+    destination=hotdata(
+        workspace_id="your_workspace_id",
+        database_id="db_abc123",       # the id printed on first-run create
+        declared_tables=["orders"],
+    ),
+)
 ds = pipeline.dataset()
 
 ds.table("orders").df()      # whole table -> pandas.DataFrame
@@ -154,7 +162,7 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 |---------------|:-------:|-------|
 | `primary_key` | ✅ | Drives merge/upsert and insert-only de-duplication |
 | `merge_key`   | ❌ | Use `primary_key` |
-| `hard_delete` | ❌ | Deletes are not propagated |
+| `hard_delete` | ⚠️ | On `merge` with a `primary_key` (default `upsert` strategy): flagged rows are deleted by key while the rest upsert (boolean hint deletes on `True`, other types on non-null). Otherwise — keyless `merge`, or `insert-only` (even with a key) — flagged rows are dropped from the batch but existing matching rows are *not* deleted, so deletes silently don't propagate |
 | `dedup_sort`  | ❌ | |
 
 ### Loader file formats
@@ -260,14 +268,14 @@ If you add a new table later, include it in `declared_tables` on the next run �
 After a pipeline runs, use the [Hotdata CLI](https://github.com/hotdata-dev/sdk-python) to check that the data landed:
 
 ```bash
-# List your managed databases
+# List your managed databases (shows each database's id)
 hotdata databases list
 
-# Check that tables are loaded and queryable
-hotdata databases tables list --database sales
+# Address by id (the one printed on first-run create) — names aren't unique
+hotdata databases tables list --database db_abc123
 
 # Query the data
-hotdata query "SELECT * FROM public.orders LIMIT 5" -d sales
+hotdata query "SELECT * FROM public.orders LIMIT 5" -d db_abc123
 ```
 
 ## Demo pipeline
