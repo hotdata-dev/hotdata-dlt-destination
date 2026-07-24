@@ -110,12 +110,27 @@ def main() -> None:
     )
     args = parser.parse_args()
     workspace_id = args.workspace_id
+
+    # id-first: a managed database is addressed by id (names are not identifiers),
+    # so a read-back must know the id. Provision the database once here and pin its
+    # id for both the write and the read; pass --database-id to reuse an existing one.
+    database_id = args.database_id
+    if database_id is None:
+        from hotdata_framework.client import HotdataClient as RuntimeClient
+
+        rc = RuntimeClient(os.environ["HOTDATA_API_KEY"], workspace_id, host=API_BASE_URL.rstrip("/"))
+        database_id = rc.create_managed_database(
+            description=DATABASE, schema="public", tables=["spans"]
+        ).id
+        rc.close()
+        print(f"created managed database {database_id} (pass --database-id {database_id} to reuse)")
+
     pipeline = dlt.pipeline(
         pipeline_name="roundtrip_demo",
         destination=hotdata(
             credentials=HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"]),
             workspace_id=workspace_id,
-            database_id=args.database_id,
+            database_id=database_id,
             database_name=DATABASE,
             declared_tables=["spans"],
             create_database_if_missing=True,
