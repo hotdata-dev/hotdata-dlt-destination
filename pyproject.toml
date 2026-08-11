@@ -18,8 +18,8 @@ dependencies = [
     # Native delete/update/upsert require the `key` field on the managed-table
     # decls (hotdata 0.8.0) and the per-load `key` on load_managed_table plus
     # create_managed_database(keys=) / add_managed_table(key=) (framework 0.8.0).
-    "hotdata>=0.8.0,<0.9",
-    "hotdata-framework>=0.9.0,<0.10",
+    "hotdata>=0.9.0,<0.10",
+    "hotdata-framework>=0.12.0,<0.13",
     "pandas>=2.0",
     "pyarrow>=14",
 ]
@@ -29,7 +29,7 @@ dependencies = [
 # backend and ibis itself; the base install stays ibis-free. hotdata-ibis 0.3.1+
 # addresses managed databases by id and tracks the hotdata 0.7 client this
 # release requires (0.3.0 capped hotdata<0.7 and can't coexist with it).
-ibis = ["hotdata-ibis>=0.3.1,<0.4", "ibis-framework>=12,<13"]
+ibis = ["hotdata-ibis>=0.5.0,<0.6", "ibis-framework>=12,<13"]
 
 [project.urls]
 Homepage = "https://hotdata.dev"

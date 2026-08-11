@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Require `hotdata>=0.9.0,<0.10`, `hotdata-framework>=0.12.0,<0.13`, and (for the
+  `ibis` extra) `hotdata-ibis>=0.5.0,<0.6`.
+
+  No code change was needed: the suite passes untouched against all three. The
+  two breaking removals in `hotdata` 0.9.0 do not reach this package — it uses the
+  enriched `hotdata.uploads.UploadsApi.upload_file(source, ...)` rather than the
+  removed `POST /v1/files` operations, and never passed `session_id`.
+
+  This unblocks consumers. The previous caps here were what stopped anything
+  downstream adopting `hotdata` 0.9 or `hotdata-framework` 0.12 — the `ibis` extra
+  pulled in a `hotdata<0.9` constraint, so the bound applied even to installs that
+  never requested the extra. `hotdata-framework` 0.12 is also the release that
+  first exposes table storage layout (`partition_by` / `sorted_by` on declaration,
+  and `managed_table_layout()` to read it back), which is what #63 needs.
+
 ## [0.11.0] - 2026-07-24
 
 ### Added
