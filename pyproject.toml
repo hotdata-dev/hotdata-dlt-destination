@@ -15,9 +15,17 @@ dependencies = [
     # the minor. The SDKs move fast too (QueryResult / query-path surface), so
     # cap those to the current minor as well. See docs/sql-client-spec.md §11.
     "dlt>=1.28.1,<1.29",
-    # Native delete/update/upsert require the `key` field on the managed-table
-    # decls (hotdata 0.8.0) and the per-load `key` on load_managed_table plus
-    # create_managed_database(keys=) / add_managed_table(key=) (framework 0.8.0).
+    # What the CODE needs: the `key` field on the managed-table decls
+    # (hotdata 0.8.0) and the per-load `key` on load_managed_table plus
+    # create_managed_database(keys=) / add_managed_table(key=) (framework 0.8.0),
+    # for native delete/update/upsert.
+    #
+    # The floors are held ABOVE that on purpose, and nothing under src/ requires
+    # either one yet. hotdata 0.9 and framework 0.12 are where the rest of the
+    # toolchain has moved, and framework 0.12 is the first release exposing the
+    # table storage layout API (partition_by / sorted_by on declaration,
+    # managed_table_layout() to read it back) that #63 is written against.
+    # Admitting older versions would mean supporting a matrix nothing tests.
     "hotdata>=0.9.0,<0.10",
     "hotdata-framework>=0.12.0,<0.13",
     "pandas>=2.0",
@@ -26,9 +34,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # Live ibis backend for dataset().ibis(). Pulls the out-of-tree ibis.hotdata
-# backend and ibis itself; the base install stays ibis-free. hotdata-ibis 0.3.1+
-# addresses managed databases by id and tracks the hotdata 0.7 client this
-# release requires (0.3.0 capped hotdata<0.7 and can't coexist with it).
+# backend and ibis itself; the base install stays ibis-free.
+#
+# hotdata-ibis 0.5.0 is the first release without a `hotdata<0.9` cap. That cap
+# is why this floor is worth recording: an extra's constraints participate in the
+# resolve even for installs that never request the extra, so it bounded every
+# consumer of this package — and was what blocked the whole toolchain from
+# adopting hotdata 0.9.
 ibis = ["hotdata-ibis>=0.5.0,<0.6", "ibis-framework>=12,<13"]
 
 [project.urls]
