@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pyarrow as pa
 from dlt.common import logger
 from hotdata.api.databases_api import DatabasesApi
@@ -133,10 +135,22 @@ class HotdataClient(ManagedDatabaseClient):
         schema: str,
         tables: list[str],
         keys: dict[str, list[str]] | None = None,
+        partition_by: dict[str, list[Any]] | None = None,
+        sorted_by: dict[str, list[Any]] | None = None,
         create_if_missing: bool,
     ) -> ManagedDatabase:
         # keys: table name -> key columns (enables delete/update/upsert on it)
+        # partition_by / sorted_by: table name -> that table's layout keys, in
+        # declaration order. Only reaches tables being CREATED — a layout is fixed
+        # at creation, so an existing table gets a warning instead.
         keys = keys or {}
+        partition_by = partition_by or {}
+        sorted_by = sorted_by or {}
+        # Which tables this call actually declared. A layout is only applied at
+        # creation, and the caller needs to know which tables are new so it can
+        # seed them — seeding an EXISTING table would empty it, since the seed is a
+        # zero-row replace load.
+        self.newly_declared: set[str] = set()
 
         db = self._cached_db()
         created = self._was_created()
@@ -161,7 +175,15 @@ class HotdataClient(ManagedDatabaseClient):
                 created = False
                 self._cache_db(db, created=False)
             elif create_if_missing:
-                db = self._create(schema=schema, tables=tables, keys=keys)
+                db = self._create(
+                    schema=schema,
+                    tables=tables,
+                    keys=keys,
+                    partition_by=partition_by,
+                    sorted_by=sorted_by,
+                )
+                # A fresh database declared every table, so every one is new.
+                self.newly_declared = set(tables)
                 created = True
                 self._cache_db(db, created=True)
             else:
@@ -170,16 +192,30 @@ class HotdataClient(ManagedDatabaseClient):
         # A freshly created database already declared every table; only an
         # existing (bound) database needs additive, in-place schema evolution.
         if not created:
-            self._reconcile_tables(db, schema=schema, tables=tables, keys=keys)
+            self._reconcile_tables(
+                db, schema=schema, tables=tables, keys=keys,
+                partition_by=partition_by or {}, sorted_by=sorted_by or {},
+            )
         return db
 
     def _create(
-        self, *, schema: str, tables: list[str], keys: dict[str, list[str]]
+        self,
+        *,
+        schema: str,
+        tables: list[str],
+        keys: dict[str, list[str]],
+        partition_by: dict[str, list[Any]] | None = None,
+        sorted_by: dict[str, list[Any]] | None = None,
     ) -> ManagedDatabase:
         description = getattr(self._config, "database_name", None)
         db = self._request_with_retry(
             lambda: self._runtime.create_managed_database(
-                description=description, schema=schema, tables=sorted(set(tables)), keys=keys
+                description=description,
+                schema=schema,
+                tables=sorted(set(tables)),
+                keys=keys,
+                partition_by=partition_by or {},
+                sorted_by=sorted_by or {},
             )
         )
         # Logged at WARNING (dlt's default level) so the new id is always visible:
@@ -200,6 +236,8 @@ class HotdataClient(ManagedDatabaseClient):
         schema: str,
         tables: list[str],
         keys: dict[str, list[str]],
+        partition_by: dict[str, list[Any]] | None = None,
+        sorted_by: dict[str, list[Any]] | None = None,
     ) -> None:
         existing = {
             managed_table.table
@@ -210,8 +248,30 @@ class HotdataClient(ManagedDatabaseClient):
         # Declare any newly-required tables additively, in place, carrying their
         # key. dlt calls ``initialize_storage`` with the full table set before any
         # load job runs, so by load time this is normally a no-op.
+        self.newly_declared |= set(tables) - existing
         for table in sorted(set(tables) - existing):
-            self._add_managed_table(db, table, schema=schema, key=keys.get(table))
+            self._add_managed_table(
+                db,
+                table,
+                schema=schema,
+                key=keys.get(table),
+                partition_by=(partition_by or {}).get(table),
+                sorted_by=(sorted_by or {}).get(table),
+            )
+        # A table that already exists cannot gain a layout — it is fixed at
+        # creation with no alter path. Warn rather than raise: refusing would break
+        # a pipeline that has been loading happily, and the layout it asked for may
+        # already be the one the table has. Verify with
+        # HotdataClient.managed_table_layout if it matters.
+        for table in sorted(set(tables) & existing):
+            if (partition_by or {}).get(table) or (sorted_by or {}).get(table):
+                logger.warning(
+                    "hotdata: %s.%s already exists, so its storage layout is "
+                    "unchanged — partition and sort keys are fixed when a table is "
+                    "created. The declared layout was NOT applied.",
+                    schema,
+                    table,
+                )
 
     def _add_managed_table(
         self,
@@ -220,9 +280,18 @@ class HotdataClient(ManagedDatabaseClient):
         *,
         schema: str,
         key: list[str] | None = None,
+        partition_by: list[Any] | None = None,
+        sorted_by: list[Any] | None = None,
     ) -> None:
         self._request_with_retry(
-            lambda: self._runtime.add_managed_table(database, table, schema=schema, key=key)
+            lambda: self._runtime.add_managed_table(
+                database,
+                table,
+                schema=schema,
+                key=key,
+                partition_by=partition_by or None,
+                sorted_by=sorted_by or None,
+            )
         )
 
     def drop_managed_database(self) -> None:

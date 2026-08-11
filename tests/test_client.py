@@ -58,6 +58,8 @@ class _Runtime:
         self.created: list[tuple] = []
         self.deleted: list[str] = []
         self.added: list[tuple] = []
+        # (table, schema) -> (partition_by, sorted_by) as declared
+        self.layouts: dict[tuple, tuple[list, list]] = {}
         self.uploaded: list[str] = []
         self.loaded: list[tuple] = []
         self.table_lists = 0
@@ -66,13 +68,23 @@ class _Runtime:
         self.table_lists += 1
         return [SimpleNamespace(table=t, synced=True) for t in self._existing_tables]
 
-    def add_managed_table(self, database, table, *, schema, key=None):
+    def add_managed_table(
+        self, database, table, *, schema, key=None, partition_by=None, sorted_by=None
+    ):
         self.added.append((getattr(database, "id", database), table, schema))
+        self.layouts[(table, schema)] = (list(partition_by or []), list(sorted_by or []))
         self._existing_tables.append(table)
         return SimpleNamespace(table=table, schema=schema)
 
-    def create_managed_database(self, *, description, schema, tables, keys=None):
+    def create_managed_database(
+        self, *, description, schema, tables, keys=None, partition_by=None, sorted_by=None
+    ):
         self.created.append((description, schema, list(tables)))
+        for tbl in tables:
+            self.layouts[(tbl, schema)] = (
+                list((partition_by or {}).get(tbl, [])),
+                list((sorted_by or {}).get(tbl, [])),
+            )
         return _db("new_db", description)
 
     def delete_managed_database(self, db):
@@ -423,4 +435,79 @@ def test_create_scoped_load_reuses_cache_without_read(monkeypatch) -> None:
     # a load in the same run resolves from cache and hands the record straight through
     client.load_managed_table("orders", schema="public", upload_id="u1")
     assert rt.loaded == [("new_db", "orders", "public", "u1")]
+    client.close()
+
+
+# --- newly_declared, which decides whether a table gets seeded ----------------
+#
+# The consumer of this is initialize_storage's replace seed. The seed is a
+# zero-row REPLACE load, so a table wrongly reported as new is EMPTIED. That
+# makes this the one attribute here whose failure destroys data rather than
+# merely misconfiguring something.
+
+
+def test_newly_declared_excludes_tables_that_already_exist(monkeypatch) -> None:
+    """`orders` exists, `customers` does not. Only `customers` may be seeded —
+    reporting `orders` would empty it."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public", tables=["orders", "customers"], create_if_missing=True
+    )
+
+    assert client.newly_declared == {"customers"}
+    client.close()
+
+
+def test_newly_declared_is_every_table_on_a_fresh_database(monkeypatch) -> None:
+    """A database created in this run declared all its tables, so all of them are
+    new and none can be holding data."""
+    _install_get_database(monkeypatch, {})
+    rt = _Runtime()
+    client = _client(rt, config=_cfg())
+
+    client.ensure_managed_database(
+        schema="public", tables=["orders", "customers"], create_if_missing=True
+    )
+
+    assert client.newly_declared == {"orders", "customers"}
+    client.close()
+
+
+def test_newly_declared_is_empty_when_nothing_is_declared(monkeypatch) -> None:
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public", tables=["orders"], create_if_missing=True
+    )
+
+    assert client.newly_declared == set()
+    client.close()
+
+
+def test_layout_is_passed_only_for_tables_being_declared(monkeypatch) -> None:
+    """A layout cannot be applied to an existing table, so it must not be sent for
+    one — and the caller gets a warning instead."""
+    from hotdata_framework import TablePartitionKey
+
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+    parts = [TablePartitionKey(column="event_date", transform="identity")]
+
+    client.ensure_managed_database(
+        schema="public",
+        tables=["orders", "customers"],
+        partition_by={"orders": parts, "customers": parts},
+        create_if_missing=True,
+    )
+
+    # customers was declared, so its layout went to the API...
+    assert [k.column for k in rt.layouts[("customers", "public")][0]] == ["event_date"]
+    # ...and orders was never re-declared at all.
+    assert [t for _db_id, t, _s in rt.added] == ["customers"]
     client.close()

@@ -164,6 +164,53 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 | `merge_key`   | ❌ | Use `primary_key` |
 | `hard_delete` | ⚠️ | On `merge` with a `primary_key` (default `upsert` strategy): flagged rows are deleted by key while the rest upsert (boolean hint deletes on `True`, other types on non-null). Otherwise — keyless `merge`, or `insert-only` (even with a key) — flagged rows are dropped from the batch but existing matching rows are *not* deleted, so deletes silently don't propagate |
 | `dedup_sort`  | ❌ | |
+| `partition`   | ✅ | Declares a partition key when the table is created. `identity` transform only — use `hotdata_adapter` for `year`/`month`/`day`/`hour` |
+| `sort`        | ✅ | Declares a sort key when the table is created. Key order follows the schema's column order — use `hotdata_adapter` when the order matters |
+| `cluster`     | ❌ | Not a hotdata concept; use `partition` |
+
+### Storage layout (partition and sort keys)
+
+A managed table's partition and sort keys are fixed **when the table is created**
+and cannot be changed afterwards — there is no alter path, a delete tombstones the
+table, and a fork refuses to copy into a layout-declaring table. A table created
+without the layout it wanted keeps that query profile until it is recreated and
+its data rewritten. So the layout must be declared before the first load.
+
+Per-column hints cover the simple case:
+
+```python
+@dlt.resource(columns={
+    "event_date": {"partition": True},
+    "event_time": {"sort": True},
+})
+def events(): ...
+```
+
+For anything richer, use the adapter — a per-column boolean cannot express key
+**order**, a partition transform, a sort direction or null placement:
+
+```python
+from hotdata_dlt_destination import hotdata_adapter
+
+hotdata_adapter(
+    events,
+    partition_by=[("event_date", "identity")],       # or year / month / day / hour
+    sorted_by=["event_time", ("tag_mac", "asc", "last")],
+)
+```
+
+Notes:
+
+- **An existing table is never modified.** Declaring a layout for a table that
+  already exists logs a warning and changes nothing.
+- **A layout naming a column the table does not have fails before upload**, rather
+  than being rejected by the server after a pipeline has extracted and normalised.
+- **A layout-declaring table's first load is a `replace`**, seeded automatically
+  when the table is created. The API requires it, and it applies even to `append`
+  tables — establishing a layout takes several server-side commits and `replace`
+  is what makes that sequence retry-safe.
+- Read back what was actually applied with
+  `hotdata_framework.HotdataClient.managed_table_layout()`.
 
 ### Loader file formats
 

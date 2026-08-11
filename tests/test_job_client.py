@@ -34,7 +34,13 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
         def bind_run_cache(self, cache: object) -> None:
             return None
 
-        def ensure_managed_database(self, *, schema, tables, keys=None, create_if_missing):
+        def ensure_managed_database(
+            self, *, schema, tables, keys=None, partition_by=None, sorted_by=None,
+            create_if_missing,
+        ):
+            # Nothing declared here, so nothing is newly created — which is what
+            # stops initialize_storage seeding tables that may already hold data.
+            self.newly_declared = set()
             return SimpleNamespace(id="db_1")
 
         def fetch_table(self, *, schema, table):
@@ -202,8 +208,14 @@ def _recording_api_cls(calls: dict, reject_mode: str | None = None):
         def bind_run_cache(self, cache: object) -> None:
             return None
 
-        def ensure_managed_database(self, *, schema, tables, keys=None, create_if_missing):
+        def ensure_managed_database(
+            self, *, schema, tables, keys=None, partition_by=None, sorted_by=None,
+            create_if_missing,
+        ):
             calls["keys"] = keys
+            calls["partition_by"] = partition_by
+            calls["sorted_by"] = sorted_by
+            self.newly_declared = set()
             return SimpleNamespace(id="db_1")
 
         def fetch_table(self, *, schema, table):
@@ -579,3 +591,103 @@ def test_get_stored_schema_returns_latest(monkeypatch) -> None:
     info = client.get_stored_schema()
     assert info is not None
     assert info.version_hash == "new"
+
+
+# --- storage layout -----------------------------------------------------------
+#
+# Two things can go wrong here and only one is loud. A hint that never reaches
+# the API leaves a permanently unpartitioned table; a seed that fires on the
+# wrong table EMPTIES it, because the seed is a zero-row replace load.
+
+
+def _layout_schema(disposition: str) -> Schema:
+    schema = Schema("events")
+    schema.update_table(
+        {
+            "name": "orders",
+            "write_disposition": disposition,
+            "columns": {
+                "id": {"name": "id", "data_type": "bigint"},
+                "event_date": {"name": "event_date", "data_type": "date", "partition": True},
+                "event_time": {"name": "event_time", "data_type": "timestamp", "sort": True},
+            },
+        }
+    )
+    return schema
+
+
+def test_layout_reaches_the_api_on_declaration(monkeypatch) -> None:
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    client = HotdataJobClient(_layout_schema("append"), _config(), hotdata().capabilities())
+
+    client.initialize_storage(truncate_tables=[])
+
+    parts = calls.get("partition_by") or {}
+    sorts = calls.get("sorted_by") or {}
+    assert [k.column for k in parts.get("orders", [])] == ["event_date"]
+    assert [k.column for k in sorts.get("orders", [])] == ["event_time"]
+
+
+def test_an_append_table_with_a_layout_is_seeded_when_newly_created(monkeypatch) -> None:
+    """The constraint that makes this feature dangerous to get wrong: the FIRST
+    load into a layout-declaring table must be `replace`, and our append path
+    loads with mode="append". Without this seed the table's first load is refused
+    outright, turning a working append pipeline into a hard failure."""
+    calls: dict = {}
+    api_cls = _recording_api_cls(calls)
+
+    class NewTable(api_cls):  # type: ignore[misc,valid-type]
+        def ensure_managed_database(self, **kwargs):
+            db = super().ensure_managed_database(**kwargs)
+            self.newly_declared = {"orders"}  # this run created it
+            return db
+
+    monkeypatch.setattr(jc, "HotdataClient", NewTable)
+    client = HotdataJobClient(_layout_schema("append"), _config(), hotdata().capabilities())
+
+    client.initialize_storage(truncate_tables=[])
+
+    assert calls.get("loads") == [("orders", "replace", 0)]
+
+
+def test_an_existing_table_is_never_seeded(monkeypatch) -> None:
+    """The dangerous direction. The seed is a zero-row REPLACE, so firing it on a
+    table that already holds data would empty it. Only tables this run created
+    may be seeded."""
+    calls: dict = {}
+    monkeypatch.setattr(jc, "HotdataClient", _recording_api_cls(calls))
+    client = HotdataJobClient(_layout_schema("append"), _config(), hotdata().capabilities())
+
+    # The recording double reports newly_declared = set(), i.e. nothing created.
+    client.initialize_storage(truncate_tables=[])
+
+    assert calls.get("loads") in (None, []), calls.get("loads")
+
+
+def test_a_new_table_without_a_layout_is_not_seeded(monkeypatch) -> None:
+    """No layout means no first-load-must-be-replace constraint, so seeding it
+    would be a pointless extra load."""
+    calls: dict = {}
+    api_cls = _recording_api_cls(calls)
+
+    class NewTable(api_cls):  # type: ignore[misc,valid-type]
+        def ensure_managed_database(self, **kwargs):
+            db = super().ensure_managed_database(**kwargs)
+            self.newly_declared = {"orders"}
+            return db
+
+    monkeypatch.setattr(jc, "HotdataClient", NewTable)
+    schema = Schema("events")
+    schema.update_table(
+        {
+            "name": "orders",
+            "write_disposition": "append",
+            "columns": {"id": {"name": "id", "data_type": "bigint"}},
+        }
+    )
+    client = HotdataJobClient(schema, _config(), hotdata().capabilities())
+
+    client.initialize_storage(truncate_tables=[])
+
+    assert calls.get("loads") in (None, []), calls.get("loads")
