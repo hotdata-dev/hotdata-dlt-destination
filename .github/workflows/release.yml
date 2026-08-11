@@ -72,4 +72,8 @@ jobs:
           name: ${{ steps.meta.outputs.name }} ${{ steps.meta.outputs.version }}
           body: ${{ steps.notes.outputs.body }}
           generate_release_notes: false
-          make_latest: true
+          # GitHub decides by tag date/semver rather than run order. `true` would
+          # move the badge when a dispatch repairs an older tag; `false` is not
+          # "leave alone" -- it marks a release explicitly NOT latest, demoting the
+          # newest tag in the case this trigger mostly serves.
+          make_latest: legacy
