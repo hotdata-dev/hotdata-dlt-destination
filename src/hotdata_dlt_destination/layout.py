@@ -55,6 +55,8 @@ def _partition_key(entry: Any) -> TablePartitionKey:
     A bare column name means `identity` — the same default the API applies to an
     omitted transform, so the short form is not a special case.
     """
+    if isinstance(entry, TablePartitionKey):
+        return entry
     if isinstance(entry, str):
         return TablePartitionKey(column=entry, transform="identity")
     if isinstance(entry, Mapping):
@@ -80,6 +82,8 @@ def _partition_key(entry: Any) -> TablePartitionKey:
 def _sort_key(entry: Any) -> TableSortKey:
     """One sort key. Direction and nulls are left unset when not given, so the
     server applies its own defaults rather than this package guessing them."""
+    if isinstance(entry, TableSortKey):
+        return entry
     if isinstance(entry, str):
         return TableSortKey(column=entry, direction=None, nulls=None)
     if isinstance(entry, Mapping):
@@ -140,19 +144,33 @@ def hotdata_adapter(
     Entries are validated here rather than at load time, so a bad transform is a
     definition-time error instead of a request the server rejects after the
     pipeline has already extracted and normalised.
+
+    Validated entries are stored as plain dicts, NOT as ``TablePartitionKey`` /
+    ``TableSortKey``. dlt persists table hints as part of the schema, so whatever
+    goes in here is written to disk and read back: a model object serialises to
+    ``!!python/object:hotdata.models...`` in an exported schema, which
+    ``yaml.safe_load`` then refuses on re-import, and which pins users' schema
+    files to an SDK class path we would not be free to move. Dicts round-trip
+    through both the JSON and YAML paths and re-resolve via the mapping branch of
+    the parsers above.
     """
     resource = get_resource_for_adapter(data)
     hints: dict[str, Any] = {}
     if partition_by is not None:
-        keys = [_partition_key(e) for e in partition_by]
-        if not keys:
+        pkeys = [_partition_key(e) for e in partition_by]
+        if not pkeys:
             raise LayoutError("partition_by was given but empty; omit it instead")
-        hints[PARTITION_HINT] = keys
+        hints[PARTITION_HINT] = [
+            {"column": k.column, "transform": k.transform} for k in pkeys
+        ]
     if sorted_by is not None:
-        keys = [_sort_key(e) for e in sorted_by]
-        if not keys:
+        skeys = [_sort_key(e) for e in sorted_by]
+        if not skeys:
             raise LayoutError("sorted_by was given but empty; omit it instead")
-        hints[SORT_HINT] = keys
+        hints[SORT_HINT] = [
+            {"column": k.column, "direction": k.direction, "nulls": k.nulls}
+            for k in skeys
+        ]
     if hints:
         resource.apply_hints(additional_table_hints=hints)
     return resource

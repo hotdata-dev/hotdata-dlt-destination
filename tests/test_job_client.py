@@ -691,3 +691,108 @@ def test_a_new_table_without_a_layout_is_not_seeded(monkeypatch) -> None:
     client.initialize_storage(truncate_tables=[])
 
     assert calls.get("loads") in (None, []), calls.get("loads")
+
+
+def test_a_partitioned_upsert_table_is_seeded_then_upserts(monkeypatch) -> None:
+    """The powercast shape: partitioned AND keyed, loading by upsert.
+
+    The seed matters more here than for append, not less. The server's rule is
+    that the FIRST load into a layout-declaring table must be `replace` — it says
+    nothing about append specifically — so an upsert-first table hits it too. Once
+    the seed has established the layout, the upsert path proceeds normally.
+    """
+    calls: dict = {}
+    api_cls = _recording_api_cls(calls)
+
+    class NewTable(api_cls):  # type: ignore[misc,valid-type]
+        def ensure_managed_database(self, **kwargs):
+            db = super().ensure_managed_database(**kwargs)
+            self.newly_declared = {"orders"}
+            return db
+
+    monkeypatch.setattr(jc, "HotdataClient", NewTable)
+    schema = Schema("events")
+    schema.update_table(
+        {
+            "name": "orders",
+            "write_disposition": "merge",
+            "columns": {
+                "id": {"name": "id", "data_type": "bigint", "primary_key": True},
+                "event_date": {"name": "event_date", "data_type": "date", "partition": True},
+                "event_time": {"name": "event_time", "data_type": "timestamp", "sort": True},
+            },
+        }
+    )
+    client = HotdataJobClient(schema, _config(), hotdata().capabilities())
+
+    client.initialize_storage(truncate_tables=[])
+
+    # A keyed, partitioned table still gets its zero-row replace seed — the
+    # constraint is about the layout, not about the write disposition.
+    assert calls.get("loads") == [("orders", "replace", 0)]
+    # And the layout itself reached the API alongside the key.
+    assert [k.column for k in (calls.get("partition_by") or {}).get("orders", [])] == [
+        "event_date"
+    ]
+    assert (calls.get("keys") or {}).get("orders") == ["id"]
+
+
+# --- verify_schema: the pre-declaration guard --------------------------------
+
+
+def _schema_with_layout(**table_hints) -> Schema:
+    schema = Schema("events")
+    schema.update_table(
+        {
+            "name": "readings",
+            "write_disposition": "append",
+            "columns": {
+                "event_time": {"name": "event_time", "data_type": "bigint"},
+            },
+            **table_hints,
+        }
+    )
+    return schema
+
+
+def test_verify_schema_rejects_a_layout_on_an_absent_column(monkeypatch) -> None:
+    """A partition key naming a column the table does not have can never succeed on
+    any retry, so it is terminal rather than a warning."""
+    monkeypatch.setattr(jc, "HotdataClient", _make_fake_api_cls({}))
+    client = HotdataJobClient(
+        _schema_with_layout(**{"x-hotdata-partition": [{"column": "nope"}]}),
+        _config(),
+        hotdata().capabilities(),
+    )
+    with pytest.raises(DestinationTerminalException, match="nope"):
+        client.verify_schema(only_tables=["readings"], new_jobs=[])
+
+
+def test_verify_schema_passes_a_layout_on_a_present_column(monkeypatch) -> None:
+    """Also pins the dlt contract this override depends on: that
+    JobClientBase.verify_schema takes only_tables / new_jobs as keywords and returns
+    an iterable of table schemas. If either drifts, this fails here rather than at
+    load time."""
+    monkeypatch.setattr(jc, "HotdataClient", _make_fake_api_cls({}))
+    client = HotdataJobClient(
+        _schema_with_layout(**{"x-hotdata-sort": [{"column": "event_time"}]}),
+        _config(),
+        hotdata().capabilities(),
+    )
+    loaded = client.verify_schema(only_tables=["readings"], new_jobs=[])
+    assert [t["name"] for t in loaded] == ["readings"]
+
+
+def test_dlt_calls_verify_schema_before_initialize_storage() -> None:
+    """The guard is only worth having if it runs before tables are created. dlt's
+    init_client calls verify_schema and then _init_dataset_and_update_schema (which
+    calls initialize_storage), so a bad layout is caught before any declaration
+    reaches the API. Pinned because the ordering is dlt's, not ours."""
+    import inspect
+
+    from dlt.load import utils as load_utils
+
+    source = inspect.getsource(load_utils.init_client)
+    assert source.index("verify_schema") < source.index(
+        "_init_dataset_and_update_schema"
+    ), "dlt now initializes storage before verify_schema; the guard must move"

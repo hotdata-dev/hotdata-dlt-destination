@@ -170,11 +170,11 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 
 ### Storage layout (partition and sort keys)
 
-A managed table's partition and sort keys are fixed **when the table is created**
-and cannot be changed afterwards — there is no alter path, a delete tombstones the
-table, and a fork refuses to copy into a layout-declaring table. A table created
-without the layout it wanted keeps that query profile until it is recreated and
-its data rewritten. So the layout must be declared before the first load.
+A managed table's partition and sort keys are fixed **when the table is created**:
+the API exposes no way to change them, a delete tombstones the table, and a fork
+refuses to copy into a layout-declaring table. A table created without the layout
+it wanted keeps that query profile until it is recreated and its data rewritten.
+So the layout must be declared before the first load.
 
 Per-column hints cover the simple case:
 
@@ -202,9 +202,12 @@ hotdata_adapter(
 Notes:
 
 - **An existing table is never modified.** Declaring a layout for a table that
-  already exists logs a warning and changes nothing.
-- **A layout naming a column the table does not have fails before upload**, rather
-  than being rejected by the server after a pipeline has extracted and normalised.
+  already exists changes nothing. Its stored layout is read back and compared, so
+  this is silent when the table already has what you declared and warns only when
+  the two actually differ.
+- **A layout naming a column the table does not have fails before the table is
+  declared**, rather than being rejected by the server after a pipeline has
+  extracted, normalised and uploaded.
 - **A layout-declaring table's first load is a `replace`**, seeded automatically
   when the table is created. The API requires it, and it applies even to `append`
   tables — establishing a layout takes several server-side commits and `replace`

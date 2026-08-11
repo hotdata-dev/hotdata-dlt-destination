@@ -451,7 +451,7 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                 # it. Tables dlt already asked us to truncate are skipped — they
                 # get the same replace below anyway.
                 seed = sorted(
-                    set(getattr(api, "newly_declared", set()))
+                    set(api.newly_declared)
                     - {managed_names.get(n, n) for n in (truncate_tables or ())}
                 )
                 # Truncate-and-insert replace: dlt passes the replace-disposition
@@ -471,13 +471,14 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                 for name in sorted(set(truncate_tables or ()) | dlt_names_to_seed):
                     if _is_internal_table(name) or name not in self.schema.tables:
                         continue
-                    # Only seed a NEW table that actually declares a layout. An
-                    # existing table would be emptied by this, and a table with no
-                    # layout has no first-load-must-be-replace constraint to satisfy.
-                    seed_only = name in dlt_names_to_seed and name not in (
-                        truncate_tables or ()
-                    )
-                    if seed_only and not declares_layout(self.schema.tables[name]):
+                    # Only seed a NEW table that actually declares a layout: a table
+                    # with no layout has no first-load-must-be-replace constraint to
+                    # satisfy. `seed` above already excludes every truncate target,
+                    # so membership in dlt_names_to_seed is by itself the "seeded,
+                    # not truncated" test.
+                    if name in dlt_names_to_seed and not declares_layout(
+                        self.schema.tables[name]
+                    ):
                         continue
                     columns = {
                         col: spec

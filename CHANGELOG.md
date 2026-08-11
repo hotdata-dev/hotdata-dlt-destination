@@ -20,11 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Three behaviours worth knowing:
 
-  - An **existing** table is never modified; declaring a layout for one warns and
-    changes nothing, because it cannot be applied.
-  - A layout naming a column the table does not have fails in `verify_schema`,
-    before any parquet is uploaded, rather than being rejected by the server after
-    a pipeline has extracted and normalised.
+  - An **existing** table is never modified; declaring a layout for one changes
+    nothing, because it cannot be applied. Its stored layout is read back and
+    compared first, so this is silent when the table already has the declared
+    layout and warns only on a real difference.
+  - A layout naming a column the table does not have fails in `verify_schema` —
+    which dlt calls before `initialize_storage` — so it fails before the table is
+    declared and before any parquet is uploaded, rather than being rejected by the
+    server after a pipeline has extracted and normalised.
   - A layout-declaring table is **seeded with a zero-row `replace`** when created.
     The API requires the first load into such a table to be `replace`, and that
     applies to `append` tables too — without the seed, declaring a layout would
