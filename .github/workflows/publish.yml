@@ -4,20 +4,50 @@ on:
   push:
     tags:
       - 'v[0-9]*'
+  # Retry an existing tag without moving it. release.yml already has this;
+  # publish is the irreversible half, so it needs it more -- without it a failure
+  # unrelated to the code leaves only "delete and re-push the tag" or "burn a
+  # version number on a CI fix".
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish (e.g. v0.12.0)'
+        required: true
+        type: string
 
 concurrency:
-  group: pypi-publish-${{ github.ref_name }}
+  group: pypi-publish-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
   contents: read
+
+env:
+  # The tag being released, however this run was triggered. Same idiom as
+  # release.yml so the two read alike.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
     name: Build distribution
     runs-on: ubuntu-latest
     steps:
+      # Before checkout, because checkout resolves the input as an arbitrary ref.
+      # Same strict form as release.yml, so the contract matches in both.
+      - name: Validate release tag format
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag must look like vX.Y.Z, got: $INPUT_TAG" >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
@@ -28,11 +58,11 @@ jobs:
 
       - name: Verify tag matches pyproject version
         run: |
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9] ]]; then
-            echo "Release tag '$GITHUB_REF_NAME' must start with 'v' followed by a digit (e.g. v1.0.0)" >&2
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9] ]]; then
+            echo "Release tag '$RELEASE_TAG' must start with 'v' followed by a digit (e.g. v1.0.0)" >&2
             exit 1
           fi
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${RELEASE_TAG#v}"
           pkg_version=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           if [ "$tag" != "$pkg_version" ]; then
             echo "Release tag ($tag) does not match pyproject.toml version ($pkg_version)" >&2
@@ -66,4 +96,9 @@ jobs:
           path: dist/
 
       - name: Publish via Trusted Publishing
-        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        # v1.13.0's bundled twine rejects `Metadata-Version: 2.5`, which current
+        # hatchling emits. That left hotdata-framework v0.11.0 tagged and released
+        # with nothing on PyPI. The build job's own `twine check --strict` passes,
+        # because it installs a current twine -- so it only surfaces at upload,
+        # after the tag is public.
