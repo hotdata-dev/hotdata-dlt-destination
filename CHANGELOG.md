@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.13.0] - 2026-08-12
+
 ### Added
 
 - Storage layout from dlt hints. A table's partition and sort keys are now
@@ -33,7 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     applies to `append` tables too — without the seed, declaring a layout would
     turn a working append pipeline into a hard failure. Only tables created in the
     same run are seeded, since the seed empties whatever it touches.
-
 
 ## [0.12.0] - 2026-08-11
 
