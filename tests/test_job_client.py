@@ -796,3 +796,35 @@ def test_dlt_calls_verify_schema_before_initialize_storage() -> None:
     assert source.index("verify_schema") < source.index(
         "_init_dataset_and_update_schema"
     ), "dlt now initializes storage before verify_schema; the guard must move"
+
+
+def test_an_invalid_stored_hint_is_terminal_not_a_bare_valueerror(monkeypatch) -> None:
+    """A hint the parsers reject raises LayoutError, which subclasses ValueError and
+    so cannot be classified as terminal by dlt. Reachable through a hand-edited
+    exported schema, which this destination supports on purpose — so it must fail
+    the same clean way a bad column name does."""
+    monkeypatch.setattr(jc, "HotdataClient", _make_fake_api_cls({}))
+    client = HotdataJobClient(
+        _schema_with_layout(
+            **{"x-hotdata-partition": [{"column": "event_time", "transform": "quarter"}]}
+        ),
+        _config(),
+        hotdata().capabilities(),
+    )
+    with pytest.raises(DestinationTerminalException, match="quarter"):
+        client.verify_schema(only_tables=["readings"], new_jobs=[])
+
+
+def test_an_invalid_stored_hint_is_terminal_in_initialize_storage(monkeypatch) -> None:
+    """The other half of the same guard: _table_layouts sits in initialize_storage,
+    outside the block that wraps API errors."""
+    monkeypatch.setattr(jc, "HotdataClient", _make_fake_api_cls({}))
+    client = HotdataJobClient(
+        _schema_with_layout(
+            **{"x-hotdata-sort": [{"column": "event_time", "direction": "sideways"}]}
+        ),
+        _config(),
+        hotdata().capabilities(),
+    )
+    with pytest.raises(DestinationTerminalException, match="sideways"):
+        client.initialize_storage()

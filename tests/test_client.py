@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 from hotdata.exceptions import ApiException, ForbiddenException
 from hotdata_framework import TablePartitionKey, TableSortKey
+from pydantic import ValidationError
 
 from hotdata_dlt_destination.errors import HotdataTerminalError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
@@ -681,4 +682,82 @@ def test_a_table_declaring_no_layout_is_never_read_back(monkeypatch) -> None:
     )
 
     assert rt.layout_reads == []
+    client.close()
+
+
+def test_a_missing_layout_method_is_loud_not_swallowed(monkeypatch) -> None:
+    """The broad `except` around the layout read must not hide a shape mismatch.
+
+    If the framework moves or renames `managed_table_layout`, the AttributeError
+    would otherwise be folded into "could not read" — silently restoring the
+    permanent "NOT applied" warning, and paying an extra request per table for it.
+    """
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _existing(partition_by=[_p("event_date")])
+    monkeypatch.delattr(type(rt), "managed_table_layout")
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    with pytest.raises(Exception) as caught:
+        client.ensure_managed_database(
+            schema="public",
+            tables=["orders"],
+            partition_by={"orders": [_p("event_date")]},
+            create_if_missing=True,
+        )
+    chain, exc = [], caught.value
+    while exc is not None:
+        chain.append(type(exc))
+        exc = exc.__cause__
+    assert AttributeError in chain, chain
+    client.close()
+
+
+def test_a_changed_layout_signature_is_loud_not_swallowed(monkeypatch) -> None:
+    """Same reasoning for the keyword names: a TypeError from calling it wrongly is
+    our bug, not an API failure, so it must not degrade into a warning."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _existing(partition_by=[_p("event_date")])
+    rt.managed_table_layout = lambda database, table, *, namespace: None
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    with pytest.raises(Exception) as caught:
+        client.ensure_managed_database(
+            schema="public",
+            tables=["orders"],
+            partition_by={"orders": [_p("event_date")]},
+            create_if_missing=True,
+        )
+    chain, exc = [], caught.value
+    while exc is not None:
+        chain.append(type(exc))
+        exc = exc.__cause__
+    assert TypeError in chain, chain
+    client.close()
+
+
+def test_a_partition_transform_can_never_be_unset() -> None:
+    """Pins why the transform comparison needs no identity/unset tolerance, unlike
+    the sort direction: the model rejects an unset transform outright, so the server
+    cannot report one back. If this ever starts constructing, the comparison in
+    _layout_already_matches needs the same tolerance the sort keys get."""
+    with pytest.raises(ValidationError):
+        TablePartitionKey(column="event_date", transform=None)
+
+
+def test_partition_transform_comparison_folds_case(monkeypatch) -> None:
+    """Declared transforms are lowercased on the way in, so a differently-cased
+    value reported back is not a real difference."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    messages = _warnings(monkeypatch)
+    rt = _existing(partition_by=[TablePartitionKey(column="event_date", transform="DAY")])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public",
+        tables=["orders"],
+        partition_by={"orders": [_p("event_date", "day")]},
+        create_if_missing=True,
+    )
+
+    assert not [m for m in messages if "NOT applied" in m], messages
     client.close()

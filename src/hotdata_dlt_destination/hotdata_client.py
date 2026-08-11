@@ -316,7 +316,9 @@ class HotdataClient(ManagedDatabaseClient):
         An unset sort ``direction`` / ``nulls`` means "whatever the server defaults
         to", so it must not be compared against the resolved value the server
         reports back — counting that as a difference is exactly what made this warn
-        on every load of a correctly configured pipeline.
+        on every load of a correctly configured pipeline. A partition ``transform``
+        needs no such tolerance: ``TablePartitionKey`` rejects an unset one, so
+        "identity" and "unset" cannot both appear. Only case is folded.
 
         False when the layout cannot be read, so an unreachable API warns rather
         than going quiet about a mismatch that may be real.
@@ -325,12 +327,19 @@ class HotdataClient(ManagedDatabaseClient):
             current = self._request_with_retry(
                 lambda: self._runtime.managed_table_layout(db, table, schema=schema)
             )
-        except Exception:
-            # Broad on purpose: this call only decides how loudly to describe a
-            # layout, so no failure reading it may take down a load.
+        except Exception as exc:
+            # A missing method or a changed signature is our bug, not an API
+            # failure, and swallowing it would silently restore the permanent
+            # "NOT applied" warning this comparison exists to remove -- with an
+            # extra request per table to earn it. _request_with_retry maps
+            # everything through classify_sdk_error, so the shape error arrives as
+            # the __cause__ of a mapped error rather than itself.
+            if isinstance(exc.__cause__, (AttributeError, TypeError)):
+                raise
+            # Any real API failure: cannot confirm, so warn rather than go quiet.
             return False
-        if [(k.column, k.transform) for k in current.partition_by] != [
-            (k.column, k.transform) for k in partition_by
+        if [(k.column, k.transform.lower()) for k in current.partition_by] != [
+            (k.column, k.transform.lower()) for k in partition_by
         ]:
             return False
         if len(current.sorted_by) != len(sorted_by):

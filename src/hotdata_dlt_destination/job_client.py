@@ -48,6 +48,7 @@ from hotdata_dlt_destination.contracts import TableContract
 from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransientError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 from hotdata_dlt_destination.layout import (
+    LayoutError,
     declares_layout,
     missing_layout_columns,
     resolve_partition_by,
@@ -423,11 +424,19 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
             database_name=self.config.database_name,
             schema_name=self.config.schema,
         )
-        partition_by, sorted_by = _table_layouts(
-            schema=self.schema,
-            database_name=self.config.database_name,
-            schema_name=self.config.schema,
-        )
+        # A hint the parsers reject raises LayoutError, which subclasses ValueError
+        # rather than DestinationTerminalException -- so without this it escapes the
+        # load step unclassified. Reachable whenever a hint was persisted or
+        # hand-written (an exported schema is editable by design), where the adapter
+        # is not there to validate at definition time.
+        try:
+            partition_by, sorted_by = _table_layouts(
+                schema=self.schema,
+                database_name=self.config.database_name,
+                schema_name=self.config.schema,
+            )
+        except LayoutError as exc:
+            raise DestinationTerminalException(str(exc)) from exc
 
         try:
             with _hotdata_api(self.config) as api:
@@ -533,7 +542,18 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         """
         loaded_tables = super().verify_schema(only_tables=only_tables, new_jobs=new_jobs)
         for table in loaded_tables:
-            missing = missing_layout_columns(table)
+            try:
+                missing = missing_layout_columns(table)
+            except LayoutError as exc:
+                # Same reason as _table_layouts in initialize_storage: a rejected
+                # hint is a ValueError, which dlt cannot classify as terminal. Both
+                # halves of this guard should fail the same way -- a bad transform
+                # in a hand-edited schema and a bad column name deserve the same
+                # clean terminal error.
+                raise DestinationTerminalException(
+                    f"table {table.get('name')!r} declares an invalid storage "
+                    f"layout: {exc}"
+                ) from exc
             if missing:
                 raise DestinationTerminalException(
                     f"table {table.get('name')!r} declares a storage layout on "
