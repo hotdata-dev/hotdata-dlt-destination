@@ -47,6 +47,13 @@ from hotdata_dlt_destination.configuration import (
 from hotdata_dlt_destination.contracts import TableContract
 from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransientError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
+from hotdata_dlt_destination.layout import (
+    LayoutError,
+    declares_layout,
+    missing_layout_columns,
+    resolve_partition_by,
+    resolve_sorted_by,
+)
 from hotdata_dlt_destination.merge import (
     combine_tables,
     resolve_hard_delete_column,
@@ -74,6 +81,34 @@ def _declared_tables(*, contract: TableContract, declared_tables: list[str] | No
         table_names=declared_tables or [],
     )
     return sorted({*normalized, contract.table_name, *_INTERNAL_TABLE_NAMES})
+
+
+def _table_layouts(
+    *, schema: Schema, database_name: str, schema_name: str
+) -> tuple[dict[str, list], dict[str, list]]:
+    """Managed-table-name -> (partition keys, sort keys), from each dlt table.
+
+    Mirrors _table_keys. Resolved for every table rather than only the one being
+    loaded, because a layout can only be set when the table is CREATED and
+    initialize_storage is where creation happens.
+    """
+    partition_by: dict[str, list] = {}
+    sorted_by: dict[str, list] = {}
+    for name, table_schema in schema.tables.items():
+        if _is_internal_table(name):
+            continue
+        parts = resolve_partition_by(table_schema)
+        sorts = resolve_sorted_by(table_schema)
+        if not parts and not sorts:
+            continue
+        managed = TableContract.from_table_schema(
+            table_schema, database_name=database_name, schema=schema_name
+        ).table_name
+        if parts:
+            partition_by[managed] = parts
+        if sorts:
+            sorted_by[managed] = sorts
+    return partition_by, sorted_by
 
 
 def _table_keys(*, schema: Schema, database_name: str, schema_name: str) -> dict[str, list[str]]:
@@ -389,6 +424,19 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
             database_name=self.config.database_name,
             schema_name=self.config.schema,
         )
+        # A hint the parsers reject raises LayoutError, which subclasses ValueError
+        # rather than DestinationTerminalException -- so without this it escapes the
+        # load step unclassified. Reachable whenever a hint was persisted or
+        # hand-written (an exported schema is editable by design), where the adapter
+        # is not there to validate at definition time.
+        try:
+            partition_by, sorted_by = _table_layouts(
+                schema=self.schema,
+                database_name=self.config.database_name,
+                schema_name=self.config.schema,
+            )
+        except LayoutError as exc:
+            raise DestinationTerminalException(str(exc)) from exc
 
         try:
             with _hotdata_api(self.config) as api:
@@ -396,7 +444,24 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                     schema=self.config.schema,
                     tables=all_tables,
                     keys=keys,
+                    partition_by=partition_by,
+                    sorted_by=sorted_by,
                     create_if_missing=self.config.create_database_if_missing,
+                )
+                # The FIRST load into a layout-declaring table must be `replace`:
+                # establishing the layout takes several server-side commits, and
+                # replace is what makes that sequence retry-safe. Our append path
+                # loads with mode="append", so without a seed here a partitioned
+                # append table is refused outright — turning a working pipeline
+                # into a hard failure, which is worse than the missing feature.
+                #
+                # Only tables this run CREATED are seeded. The seed is a zero-row
+                # replace, so seeding a table that already holds data would empty
+                # it. Tables dlt already asked us to truncate are skipped — they
+                # get the same replace below anyway.
+                seed = sorted(
+                    set(api.newly_declared)
+                    - {managed_names.get(n, n) for n in (truncate_tables or ())}
                 )
                 # Truncate-and-insert replace: dlt passes the replace-disposition
                 # tables that have jobs in this package, exactly once per package
@@ -406,8 +471,23 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                 # a per-file "replace" would leave only the last file's rows.
                 from dlt.common.libs.pyarrow import columns_to_arrow
 
-                for name in sorted(set(truncate_tables or ())):
+                # Seeded tables go through the same path as truncated ones: a
+                # zero-row replace is exactly what both need, and keeping one loop
+                # means the seed cannot drift from the truncate behaviour.
+                dlt_names_to_seed = {
+                    n for n, managed in managed_names.items() if managed in seed
+                }
+                for name in sorted(set(truncate_tables or ()) | dlt_names_to_seed):
                     if _is_internal_table(name) or name not in self.schema.tables:
+                        continue
+                    # Only seed a NEW table that actually declares a layout: a table
+                    # with no layout has no first-load-must-be-replace constraint to
+                    # satisfy. `seed` above already excludes every truncate target,
+                    # so membership in dlt_names_to_seed is by itself the "seeded,
+                    # not truncated" test.
+                    if name in dlt_names_to_seed and not declares_layout(
+                        self.schema.tables[name]
+                    ):
                         continue
                     columns = {
                         col: spec
@@ -448,6 +528,39 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                 api.drop_managed_database()
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
+
+    def verify_schema(self, only_tables=None, new_jobs=None):
+        """Reject a layout naming a column the table does not have.
+
+        The server rejects it too, but only when the declaration is made — by
+        which point a pipeline has extracted, normalised and uploaded. Failing
+        here costs nothing and names the column.
+
+        Raised as a terminal exception rather than a warning: unlike a layout on
+        an already-existing table (which is merely not applied), this cannot
+        succeed on any retry.
+        """
+        loaded_tables = super().verify_schema(only_tables=only_tables, new_jobs=new_jobs)
+        for table in loaded_tables:
+            try:
+                missing = missing_layout_columns(table)
+            except LayoutError as exc:
+                # Same reason as _table_layouts in initialize_storage: a rejected
+                # hint is a ValueError, which dlt cannot classify as terminal. Both
+                # halves of this guard should fail the same way -- a bad transform
+                # in a hand-edited schema and a bad column name deserve the same
+                # clean terminal error.
+                raise DestinationTerminalException(
+                    f"table {table.get('name')!r} declares an invalid storage "
+                    f"layout: {exc}"
+                ) from exc
+            if missing:
+                raise DestinationTerminalException(
+                    f"table {table.get('name')!r} declares a storage layout on "
+                    f"column(s) {', '.join(missing)}, which are not in its schema. "
+                    f"A partition or sort key must name a column the table has."
+                )
+        return loaded_tables
 
     def update_stored_schema(
         self,

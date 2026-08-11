@@ -2,6 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 from hotdata.exceptions import ApiException, ForbiddenException
+from hotdata_framework import TablePartitionKey, TableSortKey
+from pydantic import ValidationError
 
 from hotdata_dlt_destination.errors import HotdataTerminalError
 from hotdata_dlt_destination.hotdata_client import HotdataClient
@@ -53,26 +55,54 @@ class _Runtime:
 
     api = None
 
-    def __init__(self, existing_tables=()) -> None:
+    def __init__(self, existing_tables=(), layouts=None) -> None:
         self._existing_tables = list(existing_tables)
         self.created: list[tuple] = []
         self.deleted: list[str] = []
         self.added: list[tuple] = []
+        # (table, schema) -> (partition_by, sorted_by) as declared. Pre-seed via
+        # `layouts=` to stand for a table that already carries a layout.
+        self.layouts: dict[tuple, tuple[list, list]] = dict(layouts or {})
         self.uploaded: list[str] = []
         self.loaded: list[tuple] = []
         self.table_lists = 0
+        self.layout_reads: list[tuple] = []
 
     def list_managed_tables(self, database, *, schema):
         self.table_lists += 1
         return [SimpleNamespace(table=t, synced=True) for t in self._existing_tables]
 
-    def add_managed_table(self, database, table, *, schema, key=None):
+    def managed_table_layout(self, database, table, *, schema):
+        """Mirrors the real method: KeyError when the table is not there, so
+        "no such table" stays distinguishable from "declared without a layout"."""
+        self.layout_reads.append((table, schema))
+        if table not in self._existing_tables:
+            raise KeyError(table)
+        partition_by, sorted_by = self.layouts.get((table, schema), ([], []))
+        return SimpleNamespace(
+            schema_name=schema,
+            table_name=table,
+            partition_by=list(partition_by),
+            sorted_by=list(sorted_by),
+        )
+
+    def add_managed_table(
+        self, database, table, *, schema, key=None, partition_by=None, sorted_by=None
+    ):
         self.added.append((getattr(database, "id", database), table, schema))
+        self.layouts[(table, schema)] = (list(partition_by or []), list(sorted_by or []))
         self._existing_tables.append(table)
         return SimpleNamespace(table=table, schema=schema)
 
-    def create_managed_database(self, *, description, schema, tables, keys=None):
+    def create_managed_database(
+        self, *, description, schema, tables, keys=None, partition_by=None, sorted_by=None
+    ):
         self.created.append((description, schema, list(tables)))
+        for tbl in tables:
+            self.layouts[(tbl, schema)] = (
+                list((partition_by or {}).get(tbl, [])),
+                list((sorted_by or {}).get(tbl, [])),
+            )
         return _db("new_db", description)
 
     def delete_managed_database(self, db):
@@ -423,4 +453,311 @@ def test_create_scoped_load_reuses_cache_without_read(monkeypatch) -> None:
     # a load in the same run resolves from cache and hands the record straight through
     client.load_managed_table("orders", schema="public", upload_id="u1")
     assert rt.loaded == [("new_db", "orders", "public", "u1")]
+    client.close()
+
+
+# --- newly_declared, which decides whether a table gets seeded ----------------
+#
+# The consumer of this is initialize_storage's replace seed. The seed is a
+# zero-row REPLACE load, so a table wrongly reported as new is EMPTIED. That
+# makes this the one attribute here whose failure destroys data rather than
+# merely misconfiguring something.
+
+
+def test_newly_declared_excludes_tables_that_already_exist(monkeypatch) -> None:
+    """`orders` exists, `customers` does not. Only `customers` may be seeded —
+    reporting `orders` would empty it."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public", tables=["orders", "customers"], create_if_missing=True
+    )
+
+    assert client.newly_declared == {"customers"}
+    client.close()
+
+
+def test_newly_declared_is_every_table_on_a_fresh_database(monkeypatch) -> None:
+    """A database created in this run declared all its tables, so all of them are
+    new and none can be holding data."""
+    _install_get_database(monkeypatch, {})
+    rt = _Runtime()
+    client = _client(rt, config=_cfg())
+
+    client.ensure_managed_database(
+        schema="public", tables=["orders", "customers"], create_if_missing=True
+    )
+
+    assert client.newly_declared == {"orders", "customers"}
+    client.close()
+
+
+def test_newly_declared_is_empty_when_nothing_is_declared(monkeypatch) -> None:
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public", tables=["orders"], create_if_missing=True
+    )
+
+    assert client.newly_declared == set()
+    client.close()
+
+
+def test_layout_is_passed_only_for_tables_being_declared(monkeypatch) -> None:
+    """A layout cannot be applied to an existing table, so it must not be sent for
+    one — and the caller gets a warning instead."""
+    from hotdata_framework import TablePartitionKey
+
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+    parts = [TablePartitionKey(column="event_date", transform="identity")]
+
+    client.ensure_managed_database(
+        schema="public",
+        tables=["orders", "customers"],
+        partition_by={"orders": parts, "customers": parts},
+        create_if_missing=True,
+    )
+
+    # customers was declared, so its layout went to the API...
+    assert [k.column for k in rt.layouts[("customers", "public")][0]] == ["event_date"]
+    # ...and orders was never re-declared at all.
+    assert [t for _db_id, t, _s in rt.added] == ["customers"]
+    client.close()
+
+
+# --- the layout warning on an already-existing table --------------------------
+#
+# _reconcile_tables runs on every load, and dlt calls initialize_storage twice per
+# load package, so anything unconditional here is emitted twice per table per load
+# forever. The declared layout is compared against the stored one first, because a
+# warning a correctly-configured pipeline can never silence is noise that trains
+# people to ignore the case that matters.
+#
+# These capture via logger.warning rather than caplog: this module logs through
+# dlt's logger, which does not propagate to caplog — so a caplog assertion for an
+# ABSENT warning passes no matter what the code does.
+
+
+def _warnings(monkeypatch) -> list[str]:
+    messages: list[str] = []
+    monkeypatch.setattr(
+        "hotdata_dlt_destination.hotdata_client.logger.warning",
+        lambda msg, *args: messages.append(msg % args if args else msg),
+    )
+    return messages
+
+
+def _p(column: str, transform: str = "identity"):
+    return TablePartitionKey(column=column, transform=transform)
+
+
+def _s(column: str, direction=None, nulls=None):
+    return TableSortKey(column=column, direction=direction, nulls=nulls)
+
+
+def _existing(*, partition_by=(), sorted_by=()):
+    """A bound database whose `orders` table already carries this layout."""
+    return _Runtime(
+        existing_tables=["orders"],
+        layouts={("orders", "public"): (list(partition_by), list(sorted_by))},
+    )
+
+
+def test_no_warning_when_the_existing_layout_already_matches(monkeypatch) -> None:
+    """The table has exactly what is being declared, so there is nothing to say."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    messages = _warnings(monkeypatch)
+    rt = _existing(partition_by=[_p("event_date")], sorted_by=[_s("event_time", "asc", "last")])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public",
+        tables=["orders"],
+        partition_by={"orders": [_p("event_date")]},
+        sorted_by={"orders": [_s("event_time", "asc", "last")]},
+        create_if_missing=True,
+    )
+
+    assert not [m for m in messages if "NOT applied" in m], messages
+    client.close()
+
+
+def test_unset_sort_direction_matches_whatever_the_server_resolved(monkeypatch) -> None:
+    """Declaring a sort column without a direction means "use the server default",
+    so the resolved value reported back is not a difference. Comparing them naively
+    is what made this warn on every load of a correct pipeline."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    messages = _warnings(monkeypatch)
+    rt = _existing(sorted_by=[_s("event_time", "asc", "last")])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public",
+        tables=["orders"],
+        sorted_by={"orders": [_s("event_time")]},
+        create_if_missing=True,
+    )
+
+    assert not [m for m in messages if "NOT applied" in m], messages
+    client.close()
+
+
+def test_warns_when_the_existing_layout_actually_differs(monkeypatch) -> None:
+    """The case the warning exists for: partitioned on a different column, and no
+    call can change that."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    messages = _warnings(monkeypatch)
+    rt = _existing(partition_by=[_p("region")])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public",
+        tables=["orders"],
+        partition_by={"orders": [_p("event_date")]},
+        create_if_missing=True,
+    )
+
+    assert [m for m in messages if "NOT applied" in m], messages
+    client.close()
+
+
+def test_sort_key_order_is_a_difference(monkeypatch) -> None:
+    """Same columns, opposite order. Order is the whole reason the explicit hints
+    exist, so it has to count as a mismatch."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    messages = _warnings(monkeypatch)
+    rt = _existing(sorted_by=[_s("tag_mac"), _s("event_time")])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public",
+        tables=["orders"],
+        sorted_by={"orders": [_s("event_time"), _s("tag_mac")]},
+        create_if_missing=True,
+    )
+
+    assert [m for m in messages if "NOT applied" in m], messages
+    client.close()
+
+
+def test_an_unreadable_layout_warns_rather_than_going_quiet(monkeypatch) -> None:
+    """If the layout cannot be read, a real mismatch may be there. Silence would be
+    the wrong default for something with no repair path."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    messages = _warnings(monkeypatch)
+    rt = _existing(partition_by=[_p("event_date")])
+
+    def boom(*_a, **_k):
+        raise ApiException(status=503, reason="unavailable")
+
+    rt.managed_table_layout = boom
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public",
+        tables=["orders"],
+        partition_by={"orders": [_p("event_date")]},
+        create_if_missing=True,
+    )
+
+    assert [m for m in messages if "NOT applied" in m], messages
+    client.close()
+
+
+def test_a_table_declaring_no_layout_is_never_read_back(monkeypatch) -> None:
+    """The layout read is an extra request per table, so it must only happen when a
+    layout was actually declared on an existing table."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _Runtime(existing_tables=["orders"])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public", tables=["orders"], create_if_missing=True
+    )
+
+    assert rt.layout_reads == []
+    client.close()
+
+
+def test_a_missing_layout_method_is_loud_not_swallowed(monkeypatch) -> None:
+    """The broad `except` around the layout read must not hide a shape mismatch.
+
+    If the framework moves or renames `managed_table_layout`, the AttributeError
+    would otherwise be folded into "could not read" — silently restoring the
+    permanent "NOT applied" warning, and paying an extra request per table for it.
+    """
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _existing(partition_by=[_p("event_date")])
+    monkeypatch.delattr(type(rt), "managed_table_layout")
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    with pytest.raises(Exception) as caught:
+        client.ensure_managed_database(
+            schema="public",
+            tables=["orders"],
+            partition_by={"orders": [_p("event_date")]},
+            create_if_missing=True,
+        )
+    chain, exc = [], caught.value
+    while exc is not None:
+        chain.append(type(exc))
+        exc = exc.__cause__
+    assert AttributeError in chain, chain
+    client.close()
+
+
+def test_a_changed_layout_signature_is_loud_not_swallowed(monkeypatch) -> None:
+    """Same reasoning for the keyword names: a TypeError from calling it wrongly is
+    our bug, not an API failure, so it must not degrade into a warning."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    rt = _existing(partition_by=[_p("event_date")])
+    rt.managed_table_layout = lambda database, table, *, namespace: None
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    with pytest.raises(Exception) as caught:
+        client.ensure_managed_database(
+            schema="public",
+            tables=["orders"],
+            partition_by={"orders": [_p("event_date")]},
+            create_if_missing=True,
+        )
+    chain, exc = [], caught.value
+    while exc is not None:
+        chain.append(type(exc))
+        exc = exc.__cause__
+    assert TypeError in chain, chain
+    client.close()
+
+
+def test_a_partition_transform_can_never_be_unset() -> None:
+    """Pins why the transform comparison needs no identity/unset tolerance, unlike
+    the sort direction: the model rejects an unset transform outright, so the server
+    cannot report one back. If this ever starts constructing, the comparison in
+    _layout_already_matches needs the same tolerance the sort keys get."""
+    with pytest.raises(ValidationError):
+        TablePartitionKey(column="event_date", transform=None)
+
+
+def test_partition_transform_comparison_folds_case(monkeypatch) -> None:
+    """Declared transforms are lowercased on the way in, so a differently-cased
+    value reported back is not a real difference."""
+    _install_get_database(monkeypatch, {"db_1": _db("db_1", "sales")})
+    messages = _warnings(monkeypatch)
+    rt = _existing(partition_by=[TablePartitionKey(column="event_date", transform="DAY")])
+    client = _client(rt, config=_cfg(database_id="db_1"))
+
+    client.ensure_managed_database(
+        schema="public",
+        tables=["orders"],
+        partition_by={"orders": [_p("event_date", "day")]},
+        create_if_missing=True,
+    )
+
+    assert not [m for m in messages if "NOT applied" in m], messages
     client.close()

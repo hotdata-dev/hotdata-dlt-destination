@@ -41,6 +41,8 @@ class InMemoryBackend:
         self.id_to_name: dict[str, str] = {}
         self.declared: dict[str, set[str]] = {}
         self.keys: dict[tuple, list[str]] = {}
+        # (db, schema, table) -> (partition_by, sorted_by) as declared at creation
+        self.layouts: dict[tuple, tuple[list, list]] = {}
         self.tables: dict[tuple, pa.Table] = {}
         self.uploads: dict[str, pa.Table] = {}
         self.results: dict[str, pa.Table] = {}
@@ -68,7 +70,10 @@ class InMemoryBackend:
             for t in sorted(self.declared.get(name, set()))
         ]
 
-    def create_managed_database(self, *, description, schema, tables, keys=None, expires_at=None):
+    def create_managed_database(
+        self, *, description, schema, tables, keys=None,
+        partition_by=None, sorted_by=None, expires_at=None,
+    ):
         self._n += 1
         db_id = f"db_{self._n}"
         self.name_to_id[description] = db_id
@@ -76,6 +81,12 @@ class InMemoryBackend:
         self.declared[description] = set(tables)
         for t in tables:
             self.keys[(description, schema, t)] = list((keys or {}).get(t, []))
+            # Recorded, not ignored: a layout is fixed at creation, so "did it
+            # reach the backend" is the only thing a test can meaningfully assert.
+            self.layouts[(description, schema, t)] = (
+                list((partition_by or {}).get(t, [])),
+                list((sorted_by or {}).get(t, [])),
+            )
         return SimpleNamespace(id=db_id, description=description, default_connection_id="conn")
 
     def delete_managed_database(self, name_or_id):
@@ -87,11 +98,17 @@ class InMemoryBackend:
         for key in [k for k in self.tables if k[0] == name]:
             del self.tables[key]
 
-    def add_managed_table(self, database, table, *, schema, key=None):
+    def add_managed_table(
+        self, database, table, *, schema, key=None, partition_by=None, sorted_by=None
+    ):
         database = getattr(database, "id", database)
         name = self.id_to_name.get(database, database)
         self.declared.setdefault(name, set()).add(table)
         self.keys[(name, schema, table)] = list(key or [])
+        self.layouts[(name, schema, table)] = (
+            list(partition_by or []),
+            list(sorted_by or []),
+        )
         return SimpleNamespace(table=table, var_schema=schema, synced=False)
 
     def upload_parquet(self, path):
