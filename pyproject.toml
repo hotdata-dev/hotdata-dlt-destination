@@ -37,10 +37,12 @@ dependencies = [
 # backend and ibis itself; the base install stays ibis-free.
 #
 # hotdata-ibis 0.5.0 is the first release without a `hotdata<0.9` cap. That cap
-# is why this floor is worth recording: an extra's constraints participate in the
-# resolve even for installs that never request the extra, so it bounded every
-# consumer of this package — and was what blocked the whole toolchain from
-# adopting hotdata 0.9.
+# is why this floor is worth recording: uv resolves a project's own extras into
+# one universal lockfile, so hotdata-ibis bounded `hotdata` in uv.lock here even
+# for `uv sync` without `--extra ibis`. A plain `pip install` of the base package
+# is unaffected — pip reads an extra's requirements only when the extra is
+# requested. So this cap blocked THIS repo from adopting hotdata 0.9; what blocked
+# consumers downstream was the core `hotdata-framework` cap above.
 ibis = ["hotdata-ibis>=0.5.0,<0.6", "ibis-framework>=12,<13"]
 
 [project.urls]
