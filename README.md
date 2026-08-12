@@ -29,7 +29,7 @@ dlt handles extraction, schema inference, and batching. This package is a **nati
 - [Write modes](#write-modes)
 - [Multiple tables](#multiple-tables)
 - [Verify a load](#verify-a-load)
-- [Demo pipeline](#demo-pipeline)
+- [Demo pipelines](#demo-pipelines)
 - [How it works](#how-it-works)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -276,12 +276,6 @@ Pass these as keyword arguments to `hotdata(...)`. The `api_key` is the exceptio
 
 - `max_table_nesting` (default `1000`) — maximum nested/child-table depth.
 - `loader_parallelism_strategy` (default `sequential`) — managed-database loads lock at the catalog level, so different tables in the same database can't load concurrently. Override only if you know your loads won't contend for the same database.
-
-To sanity-check what the environment resolves to before running a pipeline, run the bundled `hotdata-dlt-destination` command — it prints the resolved API endpoint, database id/name, schema, and default write disposition:
-
-```bash
-hotdata-dlt-destination
-```
 
 ## Write modes
 
