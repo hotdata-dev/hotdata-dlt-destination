@@ -9,7 +9,18 @@ Every release uses `./scripts/release.sh`. Do not bump versions, tag, or create 
 
 ## Release steps
 
-1. Add user-facing notes under `## [Unreleased]` in `CHANGELOG.md`.
+1. Add user-facing notes under `## [Unreleased]` in `CHANGELOG.md`, grouped under
+   `### Added` / `Changed` / `Fixed` / `Removed`.
+
+   Write them **terse: "bullet + brief why"** — one bullet per user-facing change
+   stating what changed, plus a short clause of rationale only where it matters
+   (breaking changes, gotchas, version requirements). Keep symbol/API names; drop
+   mechanism and backstory (the git history holds those). Prefer one bullet with
+   semicolon-joined clauses over nested sub-bullets, and mark breaking changes
+   **Breaking:**. The style-guide comment at the top of `[Unreleased]` restates
+   this and is preserved across releases; the released entries below it are the
+   reference for the target density. `prepare` moves these notes verbatim into the
+   dated section, so what you write here is what ships.
 2. Prepare the release PR:
 
    ```bash
