@@ -46,3 +46,33 @@ def test_populated_unreleased_moves_notes_into_new_section():
     assert "- New widget." in result
     assert result.index("- New widget.") < result.index("## [0.1.1]")
     assert "The format is based on [Keep a Changelog]" in result.split("## [0.1.2]")[0]
+
+
+GUIDE = "<!--\nChangelog style — terse.\n-->"
+
+
+def test_guide_comment_is_preserved_under_unreleased_not_moved():
+    text = HEADER.replace(
+        "## [Unreleased]\n\n",
+        f"## [Unreleased]\n\n{GUIDE}\n\n### Added\n\n- New widget.\n\n",
+    )
+    result = _update_changelog_text(text, "0.1.2", "2026-05-20")
+
+    # Guide stays exactly once, under [Unreleased], above the new dated section.
+    assert result.count(GUIDE) == 1
+    unreleased, _, rest = result.partition("## [0.1.2]")
+    assert GUIDE in unreleased
+    # Notes moved into the dated section; the guide did not follow them.
+    assert "- New widget." in rest
+    assert GUIDE not in rest
+
+
+def test_guide_only_unreleased_yields_placeholder_and_keeps_guide():
+    text = HEADER.replace(
+        "## [Unreleased]\n\n",
+        f"## [Unreleased]\n\n{GUIDE}\n\n",
+    )
+    result = _update_changelog_text(text, "0.1.2", "2026-05-20")
+    assert result.count(GUIDE) == 1
+    assert GUIDE in result.split("## [0.1.2]")[0]
+    assert "- Release 0.1.2" in result

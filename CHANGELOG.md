@@ -7,201 +7,266 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!--
+Changelog style — terse "bullet + brief why":
+- One bullet per user-facing change. State what changed; add a short clause of
+  rationale only where it matters (breaking changes, gotchas, version bumps).
+- Keep symbol/API names and version requirements; drop mechanism and backstory
+  (the git history holds those). These notes are for a reader deciding whether
+  to upgrade.
+- Prefer one bullet with semicolon-joined clauses over nested sub-bullets.
+- Group under ### Added / Changed / Fixed / Removed. Mark breaking changes
+  **Breaking:**. See the released entries below for the target density.
+-->
+
+### Changed
+
+- Condensed the changelog to a terse "bullet + brief why" house style, and pinned
+  that style with a guide comment under `[Unreleased]` that `release.sh prepare`
+  preserves across releases (`update_changelog.py`); `RELEASING.md` documents the
+  convention. Repo docs/tooling only — no package or API change.
+
 
 ## [0.13.0] - 2026-08-12
 
 ### Added
 
-- Storage layout from dlt hints. A table's partition and sort keys are now
-  declared when the destination creates it, resolved from dlt's standard
-  `partition` / `sort` column hints or from the new `hotdata_adapter`.
-
-  The adapter is not sugar: a per-column boolean carries no key **order**, no
-  partition transform, and no sort direction or null placement. Since a layout is
-  fixed at table creation with no alter path, a silently reordered sort key is
-  unrepairable — so anything that cares about order must use the adapter.
-
-  Three behaviours worth knowing:
-
-  - An **existing** table is never modified; declaring a layout for one changes
-    nothing, because it cannot be applied. Its stored layout is read back and
-    compared first, so this is silent when the table already has the declared
-    layout and warns only on a real difference.
-  - A layout naming a column the table does not have fails in `verify_schema` —
-    which dlt calls before `initialize_storage` — so it fails before the table is
-    declared and before any parquet is uploaded, rather than being rejected by the
-    server after a pipeline has extracted and normalised.
-  - A layout-declaring table is **seeded with a zero-row `replace`** when created.
-    The API requires the first load into such a table to be `replace`, and that
-    applies to `append` tables too — without the seed, declaring a layout would
-    turn a working append pipeline into a hard failure. Only tables created in the
-    same run are seeded, since the seed empties whatever it touches.
+- Storage layout from dlt hints — a table's partition and sort keys are declared
+  when the destination creates it, resolved from dlt's `partition`/`sort` column
+  hints or the new `hotdata_adapter` (needed for key order, partition transform,
+  and sort direction/nulls, which the boolean hints can't carry). Layout is fixed
+  at creation with no alter path: existing tables are never modified, a layout
+  naming an unknown column fails in `verify_schema` before any upload, and
+  layout-declaring tables are seeded with a zero-row `replace` when created.
 
 ## [0.12.0] - 2026-08-11
 
 ### Changed
 
 - Require `hotdata>=0.9.0,<0.10`, `hotdata-framework>=0.12.0,<0.13`, and (for the
-  `ibis` extra) `hotdata-ibis>=0.5.0,<0.6`.
-
-  No code change was needed: the suite passes untouched against all three. The
-  two breaking removals in `hotdata` 0.9.0 do not reach this package — it uses the
-  enriched `hotdata.uploads.UploadsApi.upload_file(source, ...)` rather than the
-  removed `POST /v1/files` operations, and never passed `session_id`.
-
-  This unblocks consumers. The core `hotdata-framework` cap here was what stopped
-  anything downstream adopting `hotdata-framework` 0.12. Separately, the `ibis`
-  extra pulled a `hotdata<0.9` constraint into this repo's own `uv.lock` — uv
-  resolves a project's extras into one universal lockfile, so it applied even to
-  `uv sync` without `--extra ibis` (a plain `pip install` of the base package is
-  unaffected). `hotdata-framework` 0.12 is also the release that
-  first exposes table storage layout (`partition_by` / `sorted_by` on declaration,
-  and `managed_table_layout()` to read it back), which is what #63 needs.
+  `ibis` extra) `hotdata-ibis>=0.5.0,<0.6`. No code change — hotdata 0.9.0's
+  breaking removals don't reach this package. Unblocks downstream adoption of
+  `hotdata-framework` 0.12, which also first exposes table storage layout (#63).
 
 ## [0.11.0] - 2026-07-24
 
 ### Added
 
-- `database_id` param (`hotdata(database_id=...)`) / `HOTDATA_DATABASE_ID` env / `[destination.hotdata] database_id` config — target an existing managed database by id. On a first run with no id, the database is created by its `database_name` label and the **new id is logged** so it can be pinned (`created managed database <id> … set database_id=<id> …`) to reuse the same database on subsequent runs.
+- `database_id` param (`hotdata(database_id=...)`) / `HOTDATA_DATABASE_ID` env /
+  `[destination.hotdata] database_id` config — target an existing managed database
+  by id. On a first run with no id, one is created from its `database_name` label
+  and the new id is logged so it can be pinned to reuse across runs.
 
 ### Changed
 
-- **Breaking:** managed databases are now addressed strictly **by id**, never by name. Hotdata database names are not unique (the `name` field is a display label / description, not an identifier), so the destination no longer lists databases and matches on the name — a practice that could silently read from, write to, or **drop** the wrong database on a collision. An existing database is bound by id via `GET /databases/{id}`; with no id and `create_database_if_missing`, one is created (labelled `database_name`) and addressed by its returned id for the run. Consequence: to load into the same database across runs you must pin its `database_id` (printed on first-run create); without it, each run creates a new database. Supersedes the interim by-name collision guard. **Requires `hotdata-framework>=0.9.0`** (managed-table ops accept a resolved `ManagedDatabase` and skip the read probe — hotdata-dev/sdk-python-framework#52).
-- Create/upload/query-scoped API keys (forbidden from reading `/databases`) can bootstrap a managed database as a direct consequence: with no `database_id` the create path issues no read at all, so the key only makes the create it *is* permitted to make, and the returned record is reused (by id) for every subsequent load/add/query in the run.
-- **Breaking:** `workspace_id` moved out of `HotdataCredentials` (authentication) to a top-level `hotdata(workspace_id=...)` param / `HotdataClientConfiguration` field (configuration), matching the SDK's `Configuration(api_key=, workspace_id=)` shape. It is a **param with no environment-variable fallback** — the `HOTDATA_WORKSPACE` env var is no longer read on this path (the API key remains env-backed, as a secret). Passing `workspace_id` inside a `credentials={...}` dict still works but is deprecated (hoisted with a `DeprecationWarning`); constructing `HotdataCredentials(workspace_id=...)` now raises `TypeError` — pass `workspace_id=` to `hotdata(...)` instead.
+- **Breaking:** managed databases are addressed strictly by id, never by name —
+  Hotdata names are non-unique display labels, so name-matching could silently
+  read, write, or drop the wrong database. An existing database is bound by id via
+  `GET /databases/{id}`; with no id and `create_database_if_missing`, one is
+  created and used for the run. To load into the same database across runs, pin
+  its `database_id`. Requires `hotdata-framework>=0.9.0`.
+- Create/upload/query-scoped API keys (forbidden from reading `/databases`) can
+  now bootstrap a database: the no-`database_id` create path issues no read, so
+  the key only makes the create it is permitted to make.
+- **Breaking:** `workspace_id` moved out of `HotdataCredentials` to a top-level
+  `hotdata(workspace_id=...)` param / config field, matching the SDK's
+  `Configuration(api_key=, workspace_id=)` shape. It has no env fallback
+  (`HOTDATA_WORKSPACE` is no longer read here). Passing it inside `credentials={...}`
+  is deprecated (warns); `HotdataCredentials(workspace_id=...)` now raises `TypeError`.
 
 ### Fixed
 
-- The API key now resolves from `HOTDATA_API_KEY` following the README quickstart: setting the env var (with no `credentials=` argument) populates the destination, instead of leaving `credentials.api_key` unset and failing with an opaque `NoneType` error deep in `hotdata-framework`. Missing `api_key`/`workspace_id` now raises a clear `ConfigurationValueError` at setup naming the missing field.
+- The API key resolves from `HOTDATA_API_KEY` per the README quickstart, instead
+  of leaving `credentials.api_key` unset and failing with an opaque `NoneType`
+  error. Missing `api_key`/`workspace_id` now raises a clear
+  `ConfigurationValueError` at setup naming the missing field.
 
 
 ## [0.10.0] - 2026-07-20
 
 ### Changed
 
-- Keyed loads (`delete`/`update`/`upsert`) now send the resolved `primary_key`
-  as a per-load key on each load, so the merge matches on it even when the table
-  wasn't created with a declared key. The create-time key declaration is kept
-  (for future key-clustering/pruning). Requires `hotdata-framework>=0.8.0`.
+- Keyed loads (`delete`/`update`/`upsert`) send the resolved `primary_key` as a
+  per-load key, so the merge matches even when the table wasn't created with a
+  declared key. Requires `hotdata-framework>=0.8.0`.
 
 ### Added
 
-- `merge` loads honour dlt's `hard_delete` column hint: flagged rows are removed from the table by key (server `delete` mode) while the rest upsert, so a dlt pipeline can propagate deletes. Requires a `primary_key` (the same key the merge uses). Follows dlt's rule — a boolean hint column deletes on `True`, any other type deletes on non-null.
+- `merge` loads honour dlt's `hard_delete` column hint: flagged rows are deleted
+  by key (server `delete` mode) while the rest upsert. Requires a `primary_key`.
+  Follows dlt's rule — a boolean column deletes on `True`, other types on non-null.
 
 ## [0.9.5] - 2026-07-16
 
 ### Changed
 
-- Raised the `hotdata-framework` floor to 0.7.3 so the destination can never be paired with the pre-streaming upload path: 0.7.3 streams parquet uploads with concurrent parts under a bounded memory budget. No code changes.
+- Raised the `hotdata-framework` floor to 0.7.3 so the destination can't pair with
+  the pre-streaming upload path (0.7.3 streams parquet uploads under a bounded
+  memory budget). No code changes.
 
 ## [0.9.4] - 2026-07-16
 
 ### Fixed
 
-- Truncate now empties replace tables with a zero-row `mode="replace"` load instead of delete + re-declare. The API's delete-table endpoint tombstones the table — it disappears from listings but can never be re-declared (409) or loaded again (404) — so 0.9.3's truncate permanently broke every replace table it touched. **Do not use 0.9.3.**
+- Truncate now empties replace tables with a zero-row `mode="replace"` load instead
+  of delete + re-declare. The API's delete-table endpoint tombstones the table (it
+  can never be re-declared or reloaded), so 0.9.3's truncate permanently broke every
+  replace table it touched. **Do not use 0.9.3.**
 
 ## [0.9.3] - 2026-07-16
 
 ### Fixed
 
-- Multi-file replace data loss: tables split across multiple parquet files (e.g. under `DATA_WRITER__FILE_MAX_BYTES`) loaded every file with `mode="replace"`, so each file wiped the previous one and only the last file's rows survived. Replace-disposition tables are now truncated once per load package in `initialize_storage` (dlt's truncate-and-insert contract) and every file job loads with `mode="append"`.
+- Multi-file replace data loss: tables split across multiple parquet files loaded
+  every file with `mode="replace"`, so each file wiped the previous and only the
+  last survived. Replace tables are now truncated once per load package in
+  `initialize_storage`, and every file job appends.
 
 ## [0.9.2] - 2026-07-15
 
 ### Changed
 
-- Bumped `hotdata-framework` to 0.7.1, which streams large Parquet uploads one chunk at a time via the presigned session API instead of reading the entire file into memory. Eliminates the client-side OOM on large tables.
+- Bumped `hotdata-framework` to 0.7.1, which streams large Parquet uploads
+  chunk-by-chunk via the presigned session API. Eliminates client-side OOM on
+  large tables.
 
 ## [0.9.1] - 2026-07-15
 
 ### Added
 
-- `HotdataLoadJob.run()` now logs each Parquet file as it begins loading via dlt's logger: `load: <table> <- <file> (<N> rows)`. This makes the loading phase visible in dltHub stdout instead of being a silent gap between the "loading" stage transition and completion.
+- `HotdataLoadJob.run()` logs each Parquet file as it begins loading:
+  `load: <table> <- <file> (<N> rows)`, making the loading phase visible in dlt
+  stdout instead of a silent gap.
 
 ## [0.9.0] - 2026-07-15
 
 ### Changed
 
-- Loads use the server's native load modes instead of a client-side read-modify-write: `append`/`replace` upload directly, and `merge` with a `primary_key` maps to a native `upsert`. `insert-only`, and `merge` without a resolvable key, still combine client-side and replace. Requires the SDK's `load_managed_table(mode=)` and key-on-declare (see the dependency bump).
-- Require `hotdata-ibis>=0.3.1` for the `[ibis]` extra: `0.3.0` pinned `hotdata<0.7` and can't coexist with the 0.7 client this release needs.
+- Loads use the server's native load modes instead of a client-side
+  read-modify-write: `append`/`replace` upload directly, and `merge` with a
+  `primary_key` maps to native `upsert`. `insert-only` and keyless `merge` still
+  combine client-side and replace.
+- Require `hotdata-ibis>=0.3.1` for the `[ibis]` extra (0.3.0 pinned `hotdata<0.7`,
+  incompatible with the 0.7 client this release needs).
 
 ### Fixed
 
-- `merge`/`upsert` dedupe by the resource's `primary_key` (from dlt's per-column hints) instead of the row-unique `_dlt_id`, which produced duplicates across runs.
-- Read-modify-write combines no longer fail with an Arrow `string_view` vs `string` type error.
+- `merge`/`upsert` dedupe by the resource's `primary_key` instead of the row-unique
+  `_dlt_id`, which produced cross-run duplicates.
+- Read-modify-write combines no longer fail with an Arrow `string_view` vs `string`
+  type error.
 
 ## [0.8.0] - 2026-07-13
 
 ### Added
 
-- Live ibis backend — `pipeline.dataset().ibis()` now returns a live `ibis.hotdata` connection to the remote engine, superseding the 0.7.0 note that it was unsupported. Ibis expressions and raw SQL run server-side and return Arrow/pandas, alongside the existing `.to_ibis()` compile-to-SQL path. Behind the optional `[ibis]` extra.
-  - dlt's `create_ibis_backend` hard-dispatches per destination with no third-party hook, so the destination wraps it (`ibis_backend.py`): a Hotdata client gets the out-of-tree `hotdata-ibis` backend, every other destination is delegated unchanged. The connection binds the managed database by id.
-  - Requires `hotdata-ibis` on ibis 12 (its `0.3.0` release, id-only managed-database addressing) and `ibis-framework>=12,<13`, pulled by the `[ibis]` extra.
-  - New `HotdataClient.resolve_managed_database` (name → record with `.id`) and a `hotdata-dlt-ibis-demo` script demonstrating the load + live-read flow.
+- Live ibis backend — `pipeline.dataset().ibis()` returns a live `ibis.hotdata`
+  connection to the remote engine (supersedes the 0.7.0 unsupported note).
+  Expressions and raw SQL run server-side, returning Arrow/pandas, alongside the
+  existing `.to_ibis()` compile-to-SQL path. Behind the `[ibis]` extra; requires
+  `hotdata-ibis` on ibis 12 and `ibis-framework>=12,<13`. dlt's
+  `create_ibis_backend` has no third-party hook, so the destination wraps it
+  (`ibis_backend.py`) — Hotdata gets the out-of-tree backend, other destinations
+  pass through. Adds `HotdataClient.resolve_managed_database` and a
+  `hotdata-dlt-ibis-demo` script.
 
 ## [0.7.2] - 2026-07-09
 
 ### Added
 
-- MIT `LICENSE` file, `license`/`license-files` metadata in `pyproject.toml`, and a License section + badge in the README.
+- MIT `LICENSE` file, `license`/`license-files` metadata in `pyproject.toml`, and
+  a License section + badge in the README.
 
 ### Changed
 
-- README reworked for open-source DX: badges, table of contents, a highlights summary, a requirements section, and `Development`/`Contributing` sections. Corrected the configuration table (retry defaults are `8` attempts / `1.5s`, not `5` / `1.0`) and documented the `api_base_url` and `loader_parallelism_strategy` options.
-- Added `[project.urls]` (Homepage, Repository, Changelog, Issues) so the PyPI page links back to the project.
+- README reworked for open-source DX (badges, table of contents, highlights,
+  requirements, Development/Contributing sections). Corrected the retry defaults
+  (8 attempts / 1.5s) and documented `api_base_url` and `loader_parallelism_strategy`.
+- Added `[project.urls]` (Homepage, Repository, Changelog, Issues) so the PyPI page
+  links back to the project.
 
 ### Fixed
 
-- Loading a `Decimal` (or wei) column without explicit precision hints no longer crashes. The destination's capabilities left `decimal_precision`/`wei_precision` unset, so dlt's normalize step raised `TypeError: 'NoneType' object is not subscriptable` in `get_py_arrow_numeric` while mapping the column to parquet. Capabilities now declare dlt's default numeric precision `(38, 9)` and wei precision `(78, 0)`, matching the Postgres numeric surface DataFusion presents.
+- Loading a `Decimal` (or wei) column without precision hints no longer crashes —
+  capabilities now declare dlt's default numeric `(38, 9)` and wei `(78, 0)`
+  precision, fixing a `TypeError` in dlt's normalize step.
 
 ## [0.7.1] - 2026-07-09
 
 ### Fixed
 
-- A non-snake_case `database_name` (e.g. `my-hyphen-db`) no longer splits a pipeline's writes across two databases. Load jobs snake_cased the name when addressing the API — with `create_database_if_missing` that minted a twin database (`my_hyphen_db`) and loaded all data there — while schema/state/bookkeeping writes addressed the original verbatim, so reads against it failed with "declared but has no data". `database_name` and `schema` are opaque API addresses (a managed-database name or a `dbid...` id), not SQL identifiers, and now pass through verbatim on every path. Callers addressing by id were never affected.
+- A non-snake_case `database_name` (e.g. `my-hyphen-db`) no longer splits a
+  pipeline's writes across two databases. Load jobs snake_cased the name (minting a
+  twin `my_hyphen_db` under `create_database_if_missing`) while schema/state writes
+  used it verbatim. `database_name`/`schema` are opaque API addresses and now pass
+  through verbatim on every path. Addressing by id was never affected.
 
 ## [0.7.0] - 2026-07-09
 
 ### Added
 
-- Dataset read interface — data loaded with dlt can now be queried through the pipeline itself, the same read API as the `duckdb`/`postgres`/`bigquery` destinations. Queries run server-side on DataFusion (Postgres-compatible SQL) and return as Arrow/pandas. The client shipped in 0.6.1; these are its first release notes.
-  - `pipeline.dataset().table("t").df()` / `.arrow()` / `.fetchall()`, raw SQL via `pipeline.dataset()("SELECT ...")`, and the fluent API (`select`/`where`/`order_by`/`limit`, aggregates, `row_counts()`).
-  - New `HotdataSqlClient` + `HotdataCursor` over `pyarrow.Table` (`sql_client.py`); `sqlglot_dialect="postgres"` with identifier/literal escaping (`factory.py`); `HotdataClient.execute_sql`.
-  - ibis expressions via `pipeline.dataset().table("t").to_ibis()` (built as ibis, compiled to SQL, executed through the sql_client). The live ibis backend (`dataset().ibis()`) is not supported — dlt maps it to a direct per-destination engine connection, which Hotdata's remote engine does not expose.
-  - Querying a missing table raises dlt's `DatabaseUndefinedRelation` rather than a generic terminal error, so callers can tell "relation doesn't exist" from a real failure. `_make_database_exception` finds the engine's `"... not found"` even when it's nested under a generic `"400: Bad Request"` in the error's cause chain.
+- Dataset read interface — data loaded with dlt can be queried through the pipeline,
+  the same read API as `duckdb`/`postgres`/`bigquery`. Queries run server-side on
+  DataFusion (Postgres-compatible SQL), returning Arrow/pandas. Includes
+  `pipeline.dataset().table("t").df()/.arrow()/.fetchall()`, raw SQL via
+  `pipeline.dataset()("SELECT ...")`, the fluent API (`select`/`where`/`order_by`/
+  `limit`, aggregates, `row_counts()`), and ibis via `.to_ibis()` (compiled to SQL).
+  New `HotdataSqlClient`/`HotdataCursor` (`sql_client.py`), `sqlglot_dialect="postgres"`,
+  `HotdataClient.execute_sql`. A missing table raises dlt's `DatabaseUndefinedRelation`
+  so callers can tell it from a real failure. (The live `dataset().ibis()` backend is
+  not yet supported.)
 
 ### Changed
 
-- Cap `dlt>=1.28.1,<1.29` (was `>=1.28.1`): the read interface subclasses dlt internals (`SqlClientBase`, `DBApiCursorImpl`, `WithSqlClient`), which shift between dlt minor releases. (The `hotdata`/`hotdata-framework` caps were raised separately in 0.6.1.)
+- Cap `dlt>=1.28.1,<1.29` (was `>=1.28.1`): the read interface subclasses dlt
+  internals (`SqlClientBase`, `DBApiCursorImpl`, `WithSqlClient`) that shift between
+  minor releases.
 
 ## [0.6.1] - 2026-07-08
 
 ### Fixed
 
-- Default `loader_parallelism_strategy` is now `sequential` (was `table-sequential`). Managed-database loads lock at the catalog level, so parallel loads of *different* tables in the same database 409 each other — multi-table pipelines raced themselves and failed intermittently once the conflicts outlasted the retry budget. Override via `loader_parallelism_strategy` if concurrent table loads are ever wanted.
-- Transient-retry defaults raised from 5 attempts x 1.0s to 8 attempts x 1.5s linear backoff (~42s budget) so a concurrent writer holding the catalog lock is outlasted instead of surfacing as `409: Conflict`.
+- Default `loader_parallelism_strategy` is now `sequential` (was `table-sequential`).
+  Managed-database loads lock at the catalog level, so parallel loads of different
+  tables in the same database 409'd each other and raced. Override if concurrent
+  table loads are ever wanted.
+- Transient-retry defaults raised from 5×1.0s to 8×1.5s linear backoff (~42s budget)
+  to outlast a concurrent writer holding the catalog lock.
 
 ### Changed
 
-- Dependencies raised to `hotdata-framework>=0.6.1,<0.7` and `hotdata>=0.6.0,<0.7`: the framework carries the `X-Database-Id` scope on every result read (fixes repeat loads into an existing database failing with an opaque `400: Bad Request`) and preserves API error bodies; the 0.6.0 SDK exposes — and on `get_result_arrow` requires — the scope natively.
-- `execute_sql` passes `x_database_id` natively on the Arrow fetch; the `X-Database-Id` default-header pinning (and the `fetch_table` pinning override) is removed — the framework now scopes every result read itself.
+- Dependencies raised to `hotdata-framework>=0.6.1,<0.7` and `hotdata>=0.6.0,<0.7`,
+  which carry the `X-Database-Id` scope on every result read (fixes repeat loads into
+  an existing database failing with an opaque `400: Bad Request`).
+- `execute_sql` passes `x_database_id` natively; the manual `X-Database-Id` header
+  pinning is removed — the framework scopes every result read itself.
 
 ## [0.6.0] - 2026-06-30
 
 ### Fixed
 
-- `merge`/`upsert`/`insert-only` loads no longer drop columns or narrow column types. `combine_tables` rebuilt the merged batch with `pa.Table.from_pylist`, which infers the schema from the first row — silently dropping columns present only in incoming rows (existing rows sort first and lack them) and re-inferring, often narrowing, column types. The latter could fail the load with a 409 type conflict (e.g. `decimal(12, 2)` → `decimal(5, 2)`). The merged batch is now built with the unified schema of the existing and incoming tables, so columns and types are preserved.
+- `merge`/`upsert`/`insert-only` loads no longer drop columns or narrow types.
+  `combine_tables` rebuilt the batch with `pa.Table.from_pylist`, inferring the
+  schema from the first row — dropping columns present only in incoming rows and
+  narrowing types (which could 409). The merged batch now uses the unified schema of
+  the existing and incoming tables.
 
 ### Changed
 
-- Schema evolution now declares missing tables in place via `add_managed_table` instead of recreating the managed database. Adding a table on a later run no longer snapshots, deletes, and reloads existing data — existing tables (including dlt bookkeeping) are left untouched. Requires `hotdata-framework>=0.6.0`.
-- Clarified the write-modes documentation: dlt resources accept `append`/`replace`/`merge` only; `merge` is upsert-by-primary-key (what `upsert` resolves to), and `insert-only` is not selectable as a resource `write_disposition`.
+- Schema evolution declares missing tables in place via `add_managed_table` instead
+  of recreating the managed database, so adding a table on a later run no longer
+  snapshots, deletes, and reloads existing data. Requires `hotdata-framework>=0.6.0`.
+- Clarified write-modes docs: resources accept `append`/`replace`/`merge` only;
+  `merge` is upsert-by-primary-key, and `insert-only` isn't selectable as a resource
+  `write_disposition`.
 
 ## [0.5.0] - 2026-06-29
 
 ### Changed
 
-- Bump the `hotdata-framework` floor to `>=0.5.0` and the `hotdata` SDK to `0.5.0`. Framework 0.5.0 is backward compatible (additive-only: an optional `format` field on `LoadManagedTableRequest` and an optional `format` parameter on `ResultsApi.get_result`), so no source changes were required; the full test suite passes.
+- Bump the `hotdata-framework` floor to `>=0.5.0` and the `hotdata` SDK to `0.5.0`.
+  Framework 0.5.0 is additive-only (an optional `format` field/param), so no source
+  changes were required; the suite passes.
 
 ## [0.4.2] - 2026-06-29
 
@@ -213,112 +278,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **State sync was broken**: `normalize_identifier` stripped leading underscores, so the load-job path wrote the pipeline-state table as `dlt_pipeline_state` while `get_stored_state` read `_dlt_pipeline_state` — `get_stored_state` always returned `None` and incremental sources never resumed. Leading underscores are now preserved.
-- **Nested/child tables were double-prefixed** (`orders__orders__items`): the table contract re-prepended `parent` to dlt's already-composed name. It now uses dlt's name as-is.
-- **`update_stored_schema` crashed every real load** under dlt ≥1.28: the override didn't accept dlt's `force` keyword. It now accepts and forwards `force`.
-- Added in-memory end-to-end tests (`tests/test_e2e_inmemory.py`) that run real dlt pipelines through the destination, plus contract regression tests, covering all three issues.
+- **State sync was broken:** `normalize_identifier` stripped leading underscores, so
+  the load path wrote `dlt_pipeline_state` while `get_stored_state` read
+  `_dlt_pipeline_state` — state always returned `None` and incremental sources never
+  resumed. Leading underscores are now preserved.
+- **Nested/child tables were double-prefixed** (`orders__orders__items`): the contract
+  re-prepended `parent` to dlt's already-composed name. It now uses dlt's name as-is.
+- **`update_stored_schema` crashed every real load** under dlt ≥1.28: the override
+  didn't accept dlt's `force` keyword. It now accepts and forwards it.
+- Added in-memory end-to-end tests (`tests/test_e2e_inmemory.py`) plus contract
+  regression tests covering all three issues.
 
 ### Added
 
-- New native `hotdata` destination — a dlt `JobClientBase` + `WithStateSync` plugin — exported as `from hotdata_dlt_destination import hotdata`. It implements dlt's complete destination contract:
-  - Pipeline **state sync** (`get_stored_state`) so incremental sources restore their state from the managed database across runs.
-  - Schema versioning (`_dlt_version`) and load tracking (`_dlt_loads`); dlt internal columns (`_dlt_id`, `_dlt_load_id`) are preserved.
-  - Nested/child tables (`max_table_nesting`, default 1000) and `snake_case` identifiers.
-  - `insert-only` write disposition, in addition to `replace`/`append`/`merge`/`upsert`.
-  - Cross-run schema evolution: when an existing managed database is missing a declared table, it is recreated with the union of existing and required tables.
-- `configuration.py` (`HotdataCredentials`, `HotdataClientConfiguration` configspec), `factory.py` (`hotdata` `Destination`), and `job_client.py` (`HotdataJobClient`, `HotdataLoadJob`).
-- Tests: `tests/test_factory.py` (capabilities) and `tests/test_job_client.py` (load job + state sync against a fake client); `insert-only` and `_dlt_id`-fallback cases in `tests/test_merge.py`.
+- New native `hotdata` destination — a dlt `JobClientBase` + `WithStateSync` plugin,
+  exported as `from hotdata_dlt_destination import hotdata`. Implements dlt's full
+  contract: state sync (`get_stored_state`), schema versioning (`_dlt_version`) and
+  load tracking (`_dlt_loads`), nested/child tables (`max_table_nesting`),
+  `snake_case` identifiers, and `insert-only` alongside `replace`/`append`/`merge`/
+  `upsert`. Cross-run schema evolution recreates a database with the union of existing
+  and required tables when a declared table is missing.
+- `configuration.py`, `factory.py`, and `job_client.py` (`HotdataJobClient`,
+  `HotdataLoadJob`), plus tests (`test_factory.py`, `test_job_client.py`, merge cases).
 
 ### Removed
 
-- **Breaking:** removed the lightweight `hotdata_destination` `@dlt.destination` sink and the `_hotdata_batch_key` / `_hotdata_row_key` / `_hotdata_loaded_at` idempotency columns it added (`destination.py`, `idempotency.py`). Use `hotdata`, which relies on dlt's native `_dlt_id` for row identity. Migrate `destination=hotdata_destination(...)` → `destination=hotdata(...)` (pass `credentials=HotdataCredentials(api_key=..., workspace_id=...)` or set the env vars).
+- **Breaking:** removed the lightweight `hotdata_destination` `@dlt.destination` sink
+  and its `_hotdata_batch_key`/`_hotdata_row_key`/`_hotdata_loaded_at` idempotency
+  columns. Use `hotdata` (relies on dlt's native `_dlt_id`); migrate
+  `destination=hotdata_destination(...)` → `destination=hotdata(...)`.
 
 ### Changed
 
-- `hotdata_client.HotdataClient` is now a `hotdata_framework.managed_client.ManagedDatabaseClient` subclass that adds the cross-run union-recreate `ensure_managed_database` (was a thin re-export).
-- `merge.combine_tables` gained a `fallback_key` parameter (default `_dlt_id`); `insert-only` added to `SUPPORTED_WRITE_DISPOSITIONS`.
+- `HotdataClient` is now a `ManagedDatabaseClient` subclass adding the union-recreate
+  `ensure_managed_database`.
+- `merge.combine_tables` gained a `fallback_key` parameter (default `_dlt_id`);
+  `insert-only` added to `SUPPORTED_WRITE_DISPOSITIONS`.
 
 ## [0.4.0] - 2026-06-22
 
 ### Changed
 
-- Upgrade `hotdata` SDK to `>=0.4.1` (was `>=0.2.4`) and `hotdata-runtime` to `>=0.3.0` (was `>=0.2.0`); refresh `uv.lock`.
-- Raise the `dlt` floor to `>=1.28.1` (was `>=1.26.0`); the full test suite stays green.
-- `hotdata_client.HotdataClient` is now a thin re-export of `hotdata_runtime.managed_client.ManagedDatabaseClient`; the managed-database client logic (bounded retries, Arrow result fetching, managed-table lifecycle) is now owned and tested upstream in `hotdata-runtime`.
-- `errors.py` re-exports the typed error hierarchy from `hotdata_runtime.errors` (`HotdataError`, `HotdataTransientError`, `HotdataTerminalError`, `classify_sdk_error`); `HotdataDestinationError` is kept as a backward-compatible alias of `HotdataError`.
-- The destination load/write path now maps `HotdataTransientError` (transient failures that survived the runtime's bounded retries) to dlt's `DestinationTransientException`, so dlt's retry layer can re-attempt the load; terminal failures still map to `DestinationTerminalException`.
-- Test fixtures updated for the hotdata 0.4.1 `QueryResponse` model (now-required `preview_row_count` and `truncated` fields).
+- Upgrade `hotdata` SDK to `>=0.4.1` and `hotdata-runtime` to `>=0.3.0`; refresh
+  `uv.lock`. Raise the `dlt` floor to `>=1.28.1`; the suite stays green.
+- `HotdataClient` is now a thin re-export of
+  `hotdata_runtime.managed_client.ManagedDatabaseClient`; the managed-database client
+  logic (bounded retries, Arrow fetching, table lifecycle) is now owned upstream.
+- `errors.py` re-exports the typed hierarchy from `hotdata_runtime.errors`;
+  `HotdataDestinationError` kept as a backward-compatible alias of `HotdataError`.
+- The load path maps `HotdataTransientError` to dlt's `DestinationTransientException`
+  (so dlt can retry); terminal failures still map to `DestinationTerminalException`.
+- Test fixtures updated for hotdata 0.4.1's `QueryResponse` (`preview_row_count`,
+  `truncated`).
 
 ### Added
 
-- Strict `[tool.mypy]` configuration and a `mypy>=1.11` dev dependency (not wired into CI).
-- Expanded ruff lint `select` (`W`, `N`, `C4`, `DTZ`, `T20`, `RET`, `SIM`, `RUF`) with targeted per-file ignores; applied `ruff check --fix` and `ruff format` across `src`, `scripts`, and `tests`.
+- Strict `[tool.mypy]` configuration and a `mypy>=1.11` dev dependency (not wired into
+  CI).
+- Expanded ruff lint `select` (`W`, `N`, `C4`, `DTZ`, `T20`, `RET`, `SIM`, `RUF`) with
+  per-file ignores; applied `ruff check --fix` and `ruff format` across the tree.
 
 ## [0.3.4] - 2026-05-27
 
 ### Changed
 
-- Bump `hotdata-framework` to `>=0.4.1` — waits for result readiness on the synchronous query path, fixing merge/append loads and state reads.
+- Bump `hotdata-framework` to `>=0.4.1` — waits for result readiness on the
+  synchronous query path, fixing merge/append loads and state reads.
 
 ## [0.3.3] - 2026-05-24
 
 ### Added
 
-- Arrow-native write path: `pq.read_table()` delivers a `pa.Table` directly; metadata columns appended with `append_column()` — no `from_pylist()` reconstruction. `to_pylist()` called once only for SHA256 idempotency key computation.
-- Arrow-native read path: `fetch_table()` returns a `pa.Table` via `hotdata.arrow.ResultsApi.get_result_arrow()` (Arrow IPC) instead of JSON rows.
-- `_query_database_scoped()`: passes `X-Database-Id` header so SQL resolves to `"default".<schema>.<table>` inside a managed database's catalog.
-- `_wait_result_ready()`: polls `ResultsApi` until a result leaves `processing` state before calling `get_result_arrow`.
-- `combine_tables()` in `merge.py`: Arrow-native combine for replace, append (`pa.concat_tables`), and merge/upsert dispositions.
-- `pa.concat_tables` uses `promote_options="permissive"` so schema drift between batches fills missing columns with nulls.
-- Comprehensive `combine_tables` test coverage: replace, append with schema drift, merge by primary key, upsert, `_hotdata_row_key` fallback, `None`/empty existing.
-- `scripts/load_test.py`: end-to-end load test — creates N managed databases with synthetic Parquet data, uploads, loads, queries via Arrow IPC, and reports per-phase timing stats (mean, p50, p95, min, max, rows/s).
-- `uv lock` now runs automatically during `scripts/release.sh prepare` to keep the lockfile in sync with version bumps.
+- Arrow-native write path: `pq.read_table()` delivers a `pa.Table` directly; metadata
+  columns appended via `append_column()` (no `from_pylist()` reconstruction).
+  `to_pylist()` is called once, only for the SHA256 idempotency key.
+- Arrow-native read path: `fetch_table()` returns a `pa.Table` via `get_result_arrow()`
+  (Arrow IPC) instead of JSON rows.
+- `_query_database_scoped()` passes `X-Database-Id` so SQL resolves inside a managed
+  database's catalog; `_wait_result_ready()` polls until a result leaves `processing`.
+- `combine_tables()` in `merge.py`: Arrow-native combine for replace/append
+  (`pa.concat_tables`, `promote_options="permissive"` for schema drift) and
+  merge/upsert, with comprehensive test coverage.
+- `scripts/load_test.py`: end-to-end load test reporting per-phase timing stats.
+  `uv lock` now runs during `scripts/release.sh prepare`.
 
 ### Changed
 
-- `fetch_table_rows()` delegates to `fetch_table()` and calls `.to_pylist()` on the result.
-- `write_table_parquet()` is now the sole Parquet write helper in `parquet.py`.
-- README rewritten for a developer audience: quickstart, configuration table, write modes, multi-table setup, and demo walkthrough.
+- `fetch_table_rows()` delegates to `fetch_table()` + `.to_pylist()`;
+  `write_table_parquet()` is the sole Parquet write helper. README rewritten for a
+  developer audience.
 
 ### Removed
 
-- `read_parquet_rows()` and `write_rows_parquet()` from `parquet.py` (replaced by Arrow-native path).
-- `combine_rows()` and `append_rows()` from `merge.py` (replaced by `combine_tables()`).
+- `read_parquet_rows()`/`write_rows_parquet()` from `parquet.py` and
+  `combine_rows()`/`append_rows()` from `merge.py` (replaced by the Arrow-native path).
 
 ### Fixed
 
-- Managed-database queries now pass the `X-Database-Id` header; previously all queries returned 400 errors for non-replace dispositions.
-- `get_result_arrow` no longer raises `ResultNotReadyError` — `_wait_result_ready()` polls until the result is ready before fetching.
+- Managed-database queries now pass `X-Database-Id` (previously all non-replace queries
+  400'd); `get_result_arrow` no longer raises `ResultNotReadyError`
+  (`_wait_result_ready()` polls first).
 
 ## [0.3.2] - 2026-05-24
 
 ### Added
 
-- FRED macro-economic indicators demo pipeline (`hotdata-dlt-demo`) downloading 9 series directly from `fred.stlouisfed.org` and loading a long-format raw table and a wide monthly table into a Hotdata managed database.
-- `pandas>=2.0` declared as an explicit direct dependency.
+- FRED macro-economic indicators demo pipeline (`hotdata-dlt-demo`) loading a
+  long-format raw table and a wide monthly table into a managed database. `pandas>=2.0`
+  declared as a direct dependency.
 
 ### Changed
 
-- `_request_with_retry`: collapsed two identical `raise mapped_error from error` branches into one.
-- `_classify_error`: simplified to `classify_sdk_error(error.__cause__ or error)`, removing double-wrap.
-- Retry backoff capped at `_MAX_BACKOFF_SECONDS` (30 s) to prevent unbounded waits.
-- SQL table identifiers double-quoted to prevent injection.
-- `parquet_path` initialised to `None`; cleanup guard uses `is not None` check.
-- `_augment_rows` returns `list[dict]` directly (removed unused tuple wrapper).
-- Runbook updated to reference `hotdata-dlt-demo` only; stale pipeline entries removed.
+- Retry path simplified (`_request_with_retry`, `_classify_error`) with backoff capped
+  at 30s; SQL identifiers double-quoted against injection; `parquet_path` cleanup
+  guarded with `is not None`; `_augment_rows` returns `list[dict]` directly. Runbook
+  updated to `hotdata-dlt-demo` only.
 
 ### Removed
 
-- `basic_pipeline.py`, `incremental_pipeline.py`, `linear_pipeline.py` and their script entrypoints.
-- `run-basic.sh`, `run-incremental.sh`, `run-linear.sh` helper scripts.
-- `test_e2e_linear_hotdata.py` (depended on deleted Linear pipeline).
+- `basic`/`incremental`/`linear` pipelines, their script entrypoints, the run helper
+  scripts, and `test_e2e_linear_hotdata.py`.
 
 ### Fixed
 
-- `errors.py`: removed access to `error.body` (not present on all SDK errors).
-- `merge.py`: `row_key()` now raises `ValueError` on `None` primary-key fields instead of silently producing wrong keys.
-- `config.py`: `max_retries` and `retry_backoff_seconds` validated at parse time.
-- `cli.py`: workspace ID truncated before printing to avoid leaking full value.
+- `errors.py` no longer accesses `error.body` (not present on all SDK errors);
+  `merge.row_key()` raises on `None` primary-key fields; config retry values validated
+  at parse time; workspace ID truncated before printing.
 
 
 ## [0.3.1] - 2026-05-24
@@ -326,35 +411,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Require `hotdata-runtime>=0.2.0`.
-- Pass `description` as a keyword argument to `create_managed_database` to match the updated `hotdata-runtime` 0.2.0 API.
+- Pass `description` as a keyword argument to `create_managed_database` to match the
+  updated `hotdata-runtime` 0.2.0 API.
 
 ## [0.3.0] - 2026-05-20
 
 ### Changed
 
-- Replace SQL staging append/merge with read-modify-write using supported API operations only (`SELECT`, `upload_parquet`, `load_managed_table(replace)`).
-- Switch to dlt parquet file mode (`batch_size=0`) instead of re-encoding typed-jsonl batches.
+- Replace SQL staging append/merge with read-modify-write using supported API
+  operations only (`SELECT`, `upload_parquet`, `load_managed_table(replace)`).
+- Switch to dlt parquet file mode (`batch_size=0`) instead of re-encoding typed-jsonl
+  batches.
 - Require `hotdata>=0.2.2` for reliable `ApiClient.close()` lifecycle support.
 
 ### Added
 
 - Per-resource `write_disposition` and `primary_key` from dlt table schema.
-- `declared_tables` destination config (and `HOTDATA_DECLARED_TABLES` env var) for multi-table managed databases.
+- `declared_tables` destination config (and `HOTDATA_DECLARED_TABLES` env var) for
+  multi-table managed databases.
 - `DestinationTerminalException` mapping for non-retryable Hotdata errors.
 - Synced-table guard before `SELECT` to avoid 500s on never-loaded managed tables.
 
 ### Removed
 
-- `sql.py` DML staging path (Hotdata query API does not support DML/DDL on managed tables).
+- `sql.py` DML staging path (Hotdata query API does not support DML/DDL on managed
+  tables).
 
 ## [0.2.0] - 2026-05-20
 
 ### Changed
 
-- Load exclusively through Hotdata managed databases (parquet upload + `load_managed_table`).
+- Load exclusively through Hotdata managed databases (parquet upload +
+  `load_managed_table`).
 - Replace legacy datasets API usage with `hotdata-runtime>=0.1.1` and `hotdata>=0.2.0`.
-- Rename destination config from `dataset_prefix` to `database_name` with optional auto-create.
+- Rename destination config from `dataset_prefix` to `database_name` with optional
+  auto-create.
 
 ### Added
 
-- Parquet batch serialization, staging tables for append/merge, and release automation scripts.
+- Parquet batch serialization, staging tables for append/merge, and release automation
+  scripts.
