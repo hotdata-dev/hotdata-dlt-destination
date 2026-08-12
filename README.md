@@ -29,7 +29,7 @@ dlt handles extraction, schema inference, and batching. This package is a **nati
 - [Write modes](#write-modes)
 - [Multiple tables](#multiple-tables)
 - [Verify a load](#verify-a-load)
-- [Demo pipeline](#demo-pipeline)
+- [Demo pipelines](#demo-pipelines)
 - [How it works](#how-it-works)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -127,7 +127,7 @@ You can also author queries with **ibis**, two ways. `dataset().table("orders").
 
 ## Feature support
 
-Where `hotdata` stands against the [dlt destination capability spec](https://dlthub.com/docs/dlt-ecosystem/destinations/). ✅ supported · ⚠️ supported with caveats · ❌ not supported.
+Where `hotdata` stands against the [dlt destination capability spec](https://dlthub.com/docs/dlt-ecosystem/destinations/). ✅ supported · ⚠️ supported with caveats · 🔜 coming soon · ❌ not supported.
 
 ### Write dispositions
 
@@ -145,8 +145,8 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 |-----------------|:-------:|-------|
 | `upsert`        | ✅ | Default. Dedupes by `primary_key`, falling back to dlt's `_dlt_id` |
 | `insert-only`   | ✅ | Inserts rows whose key isn't already present; never updates existing rows |
-| `delete-insert` | ❌ | Not supported |
-| `scd2`          | ❌ | Not supported |
+| `delete-insert` | 🔜 | Coming soon |
+| `scd2`          | 🔜 | Coming soon |
 
 ### Replace strategies
 
@@ -223,6 +223,14 @@ Notes:
 | `jsonl`         | ❌ | |
 | `insert_values` | ❌ | |
 | `csv`           | ❌ | |
+
+### Data types
+
+| Feature | Support | Notes |
+|---------|:-------:|-------|
+| Standard dlt types | ✅ | Mapped to Parquet and stored as Hotdata's Postgres-compatible (DataFusion) types |
+| `Decimal` | ✅ | Default precision `(38, 9)` when the column carries no explicit precision/scale hint |
+| `wei` | ✅ | Stored as numeric with precision `(78, 0)` |
 
 ### Structure & lifecycle
 
@@ -328,12 +336,19 @@ hotdata databases tables list --database db_abc123
 hotdata query "SELECT * FROM public.orders LIMIT 5" -d db_abc123
 ```
 
-## Demo pipeline
+## Demo pipelines
 
-The package includes a demo that downloads 9 macro-economic indicators from the Federal Reserve (FRED) and loads them into Hotdata. It's a good reference for how a real pipeline is structured.
+The package ships runnable demos, each a reference for a different part of the destination. Both read the API key from the environment:
 
 ```bash
 export HOTDATA_API_KEY=your_api_key
+```
+
+### `hotdata-dlt-demo` — end-to-end load (FRED)
+
+Downloads 9 macro-economic indicators from the Federal Reserve (FRED) and loads them into Hotdata. A good reference for how a real pipeline is structured.
+
+```bash
 uv run hotdata-dlt-demo --workspace-id your_workspace_id
 ```
 
@@ -341,6 +356,15 @@ This creates an `example_macro` database with two tables:
 
 - `macro_indicators_raw` — one row per `(date, series, value)`, all 9 series at their original frequency
 - `macro_wide` — one row per month from 1992 onward, each indicator as its own column
+
+### `hotdata-dlt-ibis-demo` — live ibis backend
+
+Loads a self-contained dataset and reads it back with `pipeline.dataset().ibis()` — the live `ibis.hotdata` backend — running ibis expressions and raw SQL against the remote engine (see [Read your data back](#read-your-data-back)). Requires the `[ibis]` extra:
+
+```bash
+uv sync --extra ibis
+uv run hotdata-dlt-ibis-demo --workspace-id your_workspace_id
+```
 
 ## How it works
 
