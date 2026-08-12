@@ -19,13 +19,14 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+## [0.14.0] - 2026-08-11
+
 ### Changed
 
 - Condensed the changelog to a terse "bullet + brief why" house style, and pinned
   that style with a guide comment under `[Unreleased]` that `release.sh prepare`
   preserves across releases (`update_changelog.py`); `RELEASING.md` documents the
   convention. Repo docs/tooling only — no package or API change.
-
 
 ## [0.13.0] - 2026-08-12
 
