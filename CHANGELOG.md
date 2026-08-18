@@ -19,6 +19,8 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+## [0.13.2] - 2026-08-18
+
 ### Changed
 
 - Docs only: README feature support now covers data types (`Decimal` defaults to
