@@ -125,8 +125,8 @@ Queries run server-side on Hotdata's Apache DataFusion engine (Postgres-compatib
 
 You can also author queries with **ibis**, two ways. `dataset().table("orders").to_ibis()` gives an ibis table that dlt compiles to SQL and runs through the same client. `dataset().ibis()` returns a live `ibis.hotdata` backend — ibis expressions and raw SQL run server-side and come back as pandas/Arrow. The live backend needs the `[ibis]` extra (see [Install](#install)).
 
-This read interface is destination readback for data loaded by a DLT pipeline. It
-does not expose Hotdata managed tables as general-purpose DLT source resources.
+This read interface is destination readback for data loaded by a dlt pipeline. It
+does not expose Hotdata managed tables as general-purpose dlt source resources.
 
 ## Feature support
 

@@ -121,7 +121,7 @@ tests/
 ├── test_sql_client.py
 └── test_e2e_inmemory.py
 scripts/ (or pipelines/)
-└── roundtrip_demo.py     # NEW: dlt -> hotdata -> dlt live demo (see §10)
+└── roundtrip_demo.py     # dlt -> hotdata -> dlt live demo
 ```
 
 ## 6. `HotdataSqlClient` — method by method
@@ -424,51 +424,26 @@ the actual engine, managed-database catalog, auth, and async query polling.
 
 ## 14. Running & testing it for real — `roundtrip_demo.py`
 
-```python
-"""dlt -> Hotdata -> dlt round trip.
+`scripts/roundtrip_demo.py` is the source of truth for the live round-trip
+example. It writes a small `spans` table, reads it back through
+`pipeline.dataset()`, and then prints a manual Hotdata SDK query for comparison.
 
-Run:
-  export HOTDATA_API_KEY=<api_key>
-  uv run python scripts/roundtrip_demo.py --workspace-id <workspace_id>
-
-Pass --database-id <db_id> after the first create to reuse the same managed
-database on later runs.
-"""
-import dlt
-from hotdata_dlt_destination import hotdata
-
-@dlt.resource(name="spans", write_disposition="merge", primary_key="span_id")
-def spans():
-    yield [
-        {"span_id": "a1", "service": "api-a", "latency_ms": 812, "ok": True},
-        {"span_id": "a2", "service": "api-b", "latency_ms": 240, "ok": True},
-        {"span_id": "a3", "service": "api-a", "latency_ms": 590, "ok": False},
-    ]
-
-pipe = dlt.pipeline(
-    "roundtrip_demo",
-    destination=hotdata(
-        workspace_id="<workspace_id>",
-        database_id="<db_id>",
-        declared_tables=["spans"],
-    ),
-)
-
-# 1) WRITE
-info = pipe.run(spans())
-print(info)
-
-# 2) READ
-ds = pipe.dataset()
-print(ds.table("spans").df())                                          # full table
-print(ds("SELECT service, avg(latency_ms) AS p FROM spans GROUP BY service").df())  # aggregate
-print(ds.table("spans").where("ok = true").order_by("latency_ms").limit(2).df())
-tbl = ds.table("spans").arrow()
-print(tbl.schema)
+```bash
+export HOTDATA_API_KEY=<api_key>
+uv run python scripts/roundtrip_demo.py --workspace-id <workspace_id>
 ```
 
-**Acceptance:** step 2 prints DataFrames matching what step 1 wrote through the
-same dlt dataset interface used by other readable destinations.
+The first run creates a managed database and prints its id. Pass that id on later
+runs to reuse the same database:
+
+```bash
+uv run python scripts/roundtrip_demo.py \
+  --workspace-id <workspace_id> \
+  --database-id <database_id>
+```
+
+**Acceptance:** the dlt dataset read prints rows and aggregates matching what
+the write step loaded.
 
 ## 15. What the end-to-end flow looks like (dlt → hotdata → dlt)
 
