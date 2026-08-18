@@ -1,11 +1,11 @@
 # Tech Spec — Hotdata dlt SQL Client (read / dataset interface)
 
-Status: **Draft** · Target: this repo (`hotdata-dlt-destination`), on `main` @ v0.6.0 · Owner: (you)
+Status: **Implemented** · Target: this repo (`hotdata-dlt-destination`) @ v0.13.1
 
 ## 1. Summary
 
-Today the Hotdata destination can **write** (Parquet upload) but not **read**. This spec adds the
-dlt **dataset read interface** so users can query loaded data through dlt's own tooling:
+The Hotdata destination writes via Parquet upload and exposes dlt's **dataset
+read interface**, so users can query loaded data through dlt's own tooling:
 
 ```python
 pipeline.dataset().table("spans").df()          # pandas
@@ -20,26 +20,28 @@ prerequisite for Hotdata becoming a *verified* dlt destination, eventually upstr
 `dlt.destinations.hotdata`.
 
 The mechanism is a thin **adapter**: dlt's read stack speaks the DB-API contract
-(connections → cursors → `fetchall`/`.df()`); Hotdata speaks REST (submit SQL → poll → fetch an
-**Arrow** result). The SQL client translates between them. No new storage, no new engine — Hotdata
-already runs **Apache DataFusion** server-side; we just expose it through dlt's interface.
+(connections -> cursors -> `fetchall`/`.df()`); Hotdata speaks REST (submit SQL
+-> poll -> fetch an **Arrow** result). The SQL client translates between them.
+No new storage, no new engine: Hotdata already runs **Apache DataFusion**
+server-side, and the adapter exposes it through dlt's interface.
 
 ## 2. Scope
 
 **In scope**
-- A new `HotdataClient.execute_sql(sql, *, database) -> pyarrow.Table` (submit → poll → fetch Arrow),
-  mirroring the existing `fetch_table`.
+- `HotdataClient.execute_sql(sql) -> pyarrow.Table` (submit -> poll -> fetch
+  Arrow), mirroring the existing `fetch_table`.
 - A `SqlClientBase` implementation (`HotdataSqlClient`) wrapping that `execute_sql`.
 - A DB-API cursor over the returned `pyarrow.Table`.
 - Wiring the job client as readable (`WithSqlClient`).
 - Declaring the SQL dialect capability (`postgres`).
 - Unit tests, offline e2e tests, and a runnable round-trip demo.
 
-**Out of scope** (owned elsewhere / explicitly deferred)
-- Native/server-side merge & row updates — runtimedb epic (#782/#869); merge stays client-side.
-- SCD2 — needs server-side SQL (see §12).
+**Out of scope** (explicitly deferred)
+- SCD2 and `delete-insert` merge strategies.
 - Track 2 (querying external lakes) — not a Hotdata-managed-data concern.
 - Staging datasets, DDL transactions — Hotdata has neither.
+- General Hotdata-as-source resources. `pipeline.dataset()` is destination
+  readback for loaded data, not a source connector.
 
 ### Coverage against dlt PR [#4013](https://github.com/dlt-hub/dlt/pull/4013)
 
@@ -92,34 +94,34 @@ Reasons `SqlJobClientBase` is the wrong base:
 
 | Class | File | Role |
 |---|---|---|
-| `hotdata(Destination)` | `factory.py` | Destination + capabilities. **Change:** set `sqlglot_dialect`. |
-| `HotdataJobClient(JobClientBase, WithStateSync)` | `job_client.py` | Lifecycle. **Change:** add `WithSqlClient` + 2 properties. |
-| `HotdataLoadJob` | `job_client.py` | Parquet write job. Unchanged. |
-| `HotdataClient(ManagedDatabaseClient)` | `hotdata_client.py` | SDK wrapper (`fetch_table`, uploads). **Change:** add `execute_sql(sql, *, database) -> pa.Table` — the SDK has no query entrypoint of its own (only the private `_query_database_scoped` + Arrow fetch). |
+| `hotdata(Destination)` | `factory.py` | Destination + capabilities, including the SQL dialect for dataset reads. |
+| `HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient)` | `job_client.py` | Lifecycle, state sync, and SQL-client exposure. |
+| `HotdataLoadJob` | `job_client.py` | Parquet write job. |
+| `HotdataClient(ManagedDatabaseClient)` | `hotdata_client.py` | SDK wrapper for managed-table loads, table fetches, and SQL execution. |
 | `TableContract` | `contracts.py` | Name mapping. Reused. |
 | `HotdataTerminalError` / `HotdataTransientError` | `errors.py` | Error classes. Reused for query errors. |
 
-**New:**
+**Read adapter:**
 
 | Class | File | Role |
 |---|---|---|
-| `HotdataSqlClient(SqlClientBase[HotdataClient])` | `sql_client.py` (new) | The adapter over `HotdataClient.execute_sql`. |
-| `HotdataCursor(DBApiCursorImpl)` | `sql_client.py` (new) | DB-API cursor over a `pyarrow.Table`. |
+| `HotdataSqlClient(SqlClientBase[HotdataClient])` | `sql_client.py` | The adapter over `HotdataClient.execute_sql`. |
+| `HotdataCursor(DBApiCursorImpl)` | `sql_client.py` | DB-API cursor over a `pyarrow.Table`. |
 
 ## 5. File layout
 
 ```
 src/hotdata_dlt_destination/
-├── factory.py            # + caps.sqlglot_dialect = "postgres"
-├── hotdata_client.py     # + execute_sql(sql, *, database) -> pa.Table  (submit -> poll -> Arrow)
-├── job_client.py         # HotdataJobClient: add WithSqlClient + sql_client / sql_client_class
-├── sql_client.py         # NEW: HotdataSqlClient + HotdataCursor
-└── ... (unchanged)
+├── factory.py            # destination capabilities
+├── hotdata_client.py     # managed-table and SQL API wrapper
+├── job_client.py         # HotdataJobClient + HotdataLoadJob
+├── sql_client.py         # HotdataSqlClient + HotdataCursor
+└── ...
 tests/
-├── test_sql_client.py    # NEW: unit tests for the client + cursor
-└── test_e2e_inmemory.py  # extend in-memory backend to serve execute_sql; add read tests
+├── test_sql_client.py
+└── test_e2e_inmemory.py
 scripts/ (or pipelines/)
-└── roundtrip_demo.py     # NEW: dlt -> hotdata -> dlt live demo (see §10)
+└── roundtrip_demo.py     # dlt -> hotdata -> dlt live demo
 ```
 
 ## 6. `HotdataSqlClient` — method by method
@@ -245,27 +247,22 @@ A single dlt "location" splits into **two independent mechanisms**:
    this run) — never by name — exactly as `fetch_table` does. Managed databases are addressed by id
    only; names are not unique and are not used to look one up.
 
-**Decision — mirror the write path:** address by the run's managed database **id** + the fixed
-`public` schema, exactly as writes do. Guarantees reads return what writes wrote, zero write-side
-change. (Consequence: dlt's pipeline `dataset_name` is not the addressing key — same as today, which is
-why load output shows `dataset None`.) Whether to make `dataset_name` idiomatic later is a joint
-product decision with the runtimedb team ("dataset terminology reconciliation") — deferred.
+**Decision — mirror the write path:** address by the run's managed database
+**id** + the fixed schema, exactly as writes do. This guarantees reads return
+what writes wrote without changing the write path. The dlt pipeline
+`dataset_name` is not the managed-database addressing key; whether to make it map
+to a Hotdata schema or database later is a product/API decision.
 
-### Result endpoints are database-scoped: `X-Database-Id` (found live, not offline)
+### Result endpoints are database-scoped: `X-Database-Id`
 
-The hosted API enforces the `X-Database-Id` header on the query **result** endpoints (`get_result`,
-`get_result_arrow`), not only on the query *submit* — but the SDK sends it **only on submit**. Every
-follow-up result fetch therefore 400s (`{"code":"BAD_REQUEST","message":"X-Database-Id header is
-required: this endpoint is scoped to a database"}`). Fix: `HotdataClient` pins the header on the api
-client (`api.set_default_header("X-Database-Id", db.id)`) right after resolving name→id, in **both**
-`execute_sql` (read) and an overridden `fetch_table`.
+Hotdata query submit and result-fetch requests are scoped to a managed database.
+`HotdataClient` resolves the database once and carries that scope through both
+SQL reads and table fetches. The table-fetch path matters beyond dataset reads:
+fallback merge paths and `WithStateSync` also fetch managed-table contents.
 
-The `fetch_table` override matters **beyond reads**: the write path's merge/upsert read-back and
-`WithStateSync` (`_fetch_internal_rows → fetch_table`) hit the same result endpoints, so the same header
-gap breaks merge writes and any 2nd-run state-sync on hosted. Pinning it there repairs those too — a
-pre-existing hosted bug this work necessarily fixes. (The offline in-memory backend has no HTTP client,
-so the pin is a guarded no-op; this class of bug is only observable against a live API, which is why the
-local runtimedb / hosted gates in §13 matter and the offline suite alone can't catch it.)
+Offline tests can validate SQL generation and cursor behavior, but a live smoke
+test is still useful because it exercises API scoping, async query polling, and
+Arrow result fetching end to end.
 
 ## 9. Parameter handling
 
@@ -323,18 +320,19 @@ the engine through the `ibis.hotdata` backend rather than the sql_client.
 
 ## 11. Version linking (why this package pins both dlt *and* the Hotdata SDK)
 
-This adapter sits **between two independently-versioned dependencies and depends on the unstable
-internal surface of both**. That is the whole reason it pins both — it is classic middle-of-the-stack
-coupling:
+This adapter sits **between two independently-versioned dependencies** and uses
+version-sensitive API surfaces from both. The package pins both sides so changes
+surface as dependency or CI failures instead of runtime surprises:
 
 ```
-   dlt ──(internal base classes we subclass)──▶  hotdata-dlt-destination  ◀──(internal query surface we call)── hotdata / hotdata-framework
+   dlt -> hotdata-dlt-destination <- hotdata / hotdata-framework
 ```
 
 The public contracts of dlt (the destination/capabilities API) and of Hotdata (write: upload + load)
-are stable. But the **read** interface reaches past those public contracts on *both* sides — so a minor
-bump on either side can break us silently at runtime while the install still "resolves". Caps convert
-that silent runtime break into a loud resolution/CI failure.
+are stable. The **read** adapter also depends on dlt SQL-client base classes and
+Hotdata query/result SDK models. A minor bump on either side can change those
+shapes while the install still resolves. Caps convert that silent runtime break
+into a loud resolution or CI failure.
 
 **Why cap dlt — `dlt>=1.28.1,<1.29`.** We subclass dlt classes that are **not** part of its stable
 public API: `dlt.destinations.sql_client.{SqlClientBase, DBApiCursorImpl, WithSqlClient}`. Their shape
@@ -342,20 +340,19 @@ moves between dlt **minors** — method signatures, the cursor's `iter_arrow`/`i
 import location of `WithSqlClient`. A minor bump can change the base-class contract out from under us.
 Built/verified against `dlt==1.28.1`.
 
-**Why cap the Hotdata SDKs — `hotdata>=0.5.0,<0.6`, `hotdata-framework>=0.6.0,<0.7`.** The read path
-calls **internal** query surface, not a stable façade: `ManagedDatabaseClient._query_database_scoped`
-(private), the `QueryApi`/`ResultsApi`/`ArrowResultsApi` shapes, the poll/status fields, and the
-generated `QueryResponse` model. These SDKs move fast (0.4→0.6 in short order) and this is exactly the
-surface that shifts. The `X-Database-Id` result-endpoint requirement (§8) is a concrete case: a
-server/SDK contract detail our code tracks by hand — precisely the fragility the cap guards.
+**Why cap the Hotdata SDKs — `hotdata>=0.9.0,<0.10`,
+`hotdata-framework>=0.12.0,<0.13`.** The read path uses query/result API models,
+managed-table layout metadata, and the framework load helpers that carry native
+append/delete/update/upsert support. These SDKs move quickly, so the destination
+tracks one tested minor at a time.
 
 **How — in `pyproject.toml`:**
 
 ```toml
 dependencies = [
     "dlt>=1.28.1,<1.29",          # subclass dlt internals -> cap the minor
-    "hotdata>=0.5.0,<0.6",         # generated client: QueryResponse / results APIs
-    "hotdata-framework>=0.6.0,<0.7",  # query path: _query_database_scoped, Arrow fetch, poll shape
+    "hotdata>=0.9.0,<0.10",        # generated client: query/results APIs
+    "hotdata-framework>=0.12.0,<0.13",  # managed-table load and layout helpers
     ...
 ]
 ```
@@ -411,65 +408,42 @@ stored Arrow tables, then assert full round trips:
 | ibis **expressions** (`.table("t").to_ibis()` → compile → SQL) | sqlglot(postgres) → `execute_query` | offline + live |
 | ibis **live backend** (`dataset().ibis()`) | wraps dlt's `create_ibis_backend` → `ibis.hotdata` | offline + live |
 
-### 13d. Live e2e / manual — the round-trip demo, against **local runtimedb**
-This is the "actually running it" test, and the **primary integration target** — the real DataFusion
-engine, run locally, no cloud creds or cost. Setup (see `../docs/local-cluster.md`):
-1. Bring the stack up: from the `monopoly/` repo, `./local_cluster.sh up` (Docker Desktop kind
-   cluster; runtimedb + flightdlt in a `workspace-<id>` namespace). First run: `rebuild`.
-2. Get a **local** API key + workspace id from `http://app.localhost/` (`admin@hotdata.dev` /
-   `hotdata-local-dev`). This is a *separate* account from hosted `api.hotdata.dev`.
-3. Point the destination at the local API — the config already supports it:
-   `hotdata(api_base_url="http://api.localhost", ...)` (or `HOTDATA_API_BASE_URL=http://api.localhost`).
-4. Run `roundtrip_demo.py` (§14). runtimedb scales from zero on first query — expect a cold-start
-   delay.
+### 13d. Live e2e / manual — the round-trip demo
 
-Tiers, high level: **13a** unit (canned `pyarrow.Table`) and **13b** offline datafusion stand-in run in
-CI with no cluster; **13d** local runtimedb is the real-engine integration gate; a hosted
-`api.hotdata.dev` smoke is optional. The local cluster is preferred over the datafusion stand-in
-wherever it's available because it exercises the actual engine, the managed-DB catalog, auth, and
-async query polling.
+This is the "actually running it" test against a real Hotdata API endpoint:
+
+1. Set `HOTDATA_API_KEY`.
+2. Pass `--workspace-id <workspace_id>` to the demo.
+3. Optionally set `HOTDATA_API_BASE_URL` when targeting a non-default Hotdata API
+   endpoint.
+4. Run `roundtrip_demo.py` (§14).
+
+Tiers, high level: **13a** unit tests use canned `pyarrow.Table` values, **13b**
+offline tests use a DataFusion stand-in, and **13d** live smoke tests exercise
+the actual engine, managed-database catalog, auth, and async query polling.
 
 ## 14. Running & testing it for real — `roundtrip_demo.py`
 
-```python
-"""dlt -> hotdata -> dlt round trip. Run: set -a; source .env; set +a; uv run python scripts/roundtrip_demo.py --workspace-id <id>
-Point at the LOCAL cluster with HOTDATA_API_BASE_URL=http://api.localhost (+ a local key),
-or omit for hosted api.hotdata.dev."""
-import dlt
-from hotdata_dlt_destination import hotdata
+`scripts/roundtrip_demo.py` is the source of truth for the live round-trip
+example. It writes a small `spans` table, reads it back through
+`pipeline.dataset()`, and then prints a manual Hotdata SDK query for comparison.
 
-@dlt.resource(name="spans", write_disposition="merge", primary_key="span_id")
-def spans():
-    yield [
-        {"span_id": "a1", "model": "claude-opus-4-8", "latency_ms": 812, "ok": True},
-        {"span_id": "a2", "model": "claude-sonnet-5", "latency_ms": 240, "ok": True},
-        {"span_id": "a3", "model": "claude-opus-4-8", "latency_ms": 590, "ok": False},
-    ]
-
-pipe = dlt.pipeline(
-    "roundtrip_demo",
-    destination=hotdata(database_name="roundtrip_demo", declared_tables=["spans"]),
-)
-
-# 1) WRITE  (works today)
-info = pipe.run(spans())
-print(info)
-
-# 2) READ   (unlocked by this spec)
-#    NOTE (id-first, 0.11.0): reads resolve the managed DB by id. In a single
-#    process the read needs a database_id — pin the id logged on the first-run
-#    create above via hotdata(database_id="db_..."). Without it the read raises
-#    "no managed database resolved". See README "Read your data back".
-ds = pipe.dataset()
-print(ds.table("spans").df())                                          # full table
-print(ds("SELECT model, avg(latency_ms) AS p FROM spans GROUP BY model").df())  # aggregate
-print(ds.table("spans").where("ok = true").order_by("latency_ms").limit(2).df())
-tbl = ds.table("spans").arrow()
-print(tbl.schema)
+```bash
+export HOTDATA_API_KEY=<api_key>
+uv run python scripts/roundtrip_demo.py --workspace-id <workspace_id>
 ```
 
-**Acceptance:** step 2 prints DataFrames matching what step 1 wrote — with **no** database IDs, no
-`-d` flag, no CLI — proving the same `pipeline` object writes and reads.
+The first run creates a managed database and prints its id. Pass that id on later
+runs to reuse the same database:
+
+```bash
+uv run python scripts/roundtrip_demo.py \
+  --workspace-id <workspace_id> \
+  --database-id <database_id>
+```
+
+**Acceptance:** the dlt dataset read prints rows and aggregates matching what
+the write step loaded.
 
 ## 15. What the end-to-end flow looks like (dlt → hotdata → dlt)
 
@@ -502,8 +476,8 @@ print(tbl.schema)
 
 ## 17. Open questions
 
-1. **`dataset_name` semantics** — keep it non-addressing (mirror write path), or make it map to a
-   Hotdata schema/DB later? (Joint call with runtimedb team.)
+1. **`dataset_name` semantics** — keep it non-addressing, or make it map to a
+   Hotdata schema/database later?
 2. **DataFusion `information_schema`** — confirm shape; decide whether `has_dataset`/`tables()` use it
    or the managed-DB API.
 3. **SCD2** — client-side emulation vs. wait for server-side merge (§12).
