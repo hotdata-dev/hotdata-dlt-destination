@@ -19,6 +19,17 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+## [0.13.2] - 2026-08-18
+
+### Changed
+
+- Docs only: README feature support now covers data types (`Decimal` defaults to
+  `(38, 9)`, `wei` stored as `(78, 0)`) and marks the `delete-insert`/`scd2` merge
+  strategies as coming soon; clarified that the SQL/ibis read interface is
+  destination readback, not a general-purpose dlt source. `docs/architecture.md`,
+  `docs/runbook.md`, and `docs/sql-client-spec.md` refreshed to match shipped
+  behavior. No package or API change.
+
 ## [0.13.1] - 2026-08-11
 
 ### Changed
