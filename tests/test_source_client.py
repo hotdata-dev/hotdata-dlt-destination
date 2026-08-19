@@ -28,6 +28,7 @@ from hotdata_dlt_destination.source_client import (
     _has_list_view,
     _materialized,
     _materialized_schema,
+    _rows_from_response,
     _response_row_count,
     _sliced,
     _total_from_headers,
@@ -91,6 +92,7 @@ class FakeSourceClient(HotdataSourceClient):
         unpersisted_rows: int = 0,
         truncated: bool = False,
         body_total: int | None = None,
+        body_rows_as_dicts: bool = False,
     ) -> None:
         # Deliberately no super().__init__(): that would build a real API client.
         # _runtime still has to exist -- the real streaming path reads
@@ -108,6 +110,10 @@ class FakeSourceClient(HotdataSourceClient):
         # persisted result is fetched instead.
         self._truncated = truncated
         self._body_total = body_total
+        # The SDK types `rows` as a list of LISTS, so positional is the shape the
+        # real API sends and therefore the default here. The dict form is opt-in,
+        # covering a server or fixture that pre-zips it.
+        self._body_rows_as_dicts = body_rows_as_dicts
         self.submitted: list[str] = []
         self.closed = False
 
@@ -117,7 +123,12 @@ class FakeSourceClient(HotdataSourceClient):
         """A synchronous response whose body carries the fake's table."""
         assert database_id == DB
         self.submitted.append(sql)
-        rows = self._table.to_pylist()
+        dict_rows = self._table.to_pylist()
+        rows = (
+            dict_rows
+            if self._body_rows_as_dicts
+            else [[r[c] for c in self._table.column_names] for r in dict_rows]
+        )
         total = len(rows) if self._body_total is None else self._body_total
         return QueryResponse.model_construct(
             result_id=self._result_id,
@@ -1009,3 +1020,94 @@ def test_a_list_view_inside_a_map_takes_the_rebuild_path() -> None:
     assert result.item_field.type == pa.list_(pa.int64())
     assert result.key_field.nullable is False
     assert out.column("m").to_pylist() == [[("a", [1, 2])], [("b", [3])]]
+
+
+# --- the body route's own contract -------------------------------------------
+
+
+def test_the_body_route_reads_the_positional_wire_shape() -> None:
+    """The SDK types `rows` as a list of lists, so this is the real shape.
+
+    The dict branch is for a server or fixture that pre-zips; if only that one were
+    covered, the branch running in production would be the one CI never touches.
+    """
+    client = FakeSourceClient(truncated=False)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    assert rows[0] == {"id": 1, "name": "a"}
+    assert len(rows) == 5
+
+
+def test_the_body_route_also_reads_pre_zipped_rows() -> None:
+    client = FakeSourceClient(truncated=False, body_rows_as_dicts=True)
+    assert client.read_rows("SELECT * FROM public.t", database_id=DB)[0] == {
+        "id": 1,
+        "name": "a",
+    }
+
+
+def test_a_row_of_the_wrong_width_is_refused_rather_than_truncated() -> None:
+    """`strict=True`: a short row means the arrays do not describe each other.
+
+    Dropping the tail would produce rows missing columns, which the row COUNT
+    cannot detect -- it counts rows, not fields.
+    """
+    response = QueryResponse.model_construct(
+        result_id="rslt_1",
+        columns=["id", "name"],
+        rows=[[1, "a"], [2]],
+        nullable=[],
+        preview_row_count=2,
+        row_count=2,
+        total_row_count=2,
+        truncated=False,
+        query_run_id="qr_1",
+        execution_time_ms=1,
+        warning=None,
+    )
+    with pytest.raises(ValueError, match="zip"):
+        _rows_from_response(response)
+
+
+def test_an_unverifiable_body_falls_back_instead_of_being_trusted() -> None:
+    """No `total_row_count` means the body cannot be checked, so it is not used.
+
+    Both fields failing open at once is what would otherwise turn a response
+    carrying no rows into a successful empty read -- and under
+    write_disposition="replace" an empty read truncates the destination table and
+    reports success. The fallback costs one uncommon read the slower path; it never
+    trusts a body it could not verify.
+    """
+    unverifiable = QueryResponse.model_construct(
+        result_id="rslt_1", columns=["id"], rows=[], nullable=[],
+        preview_row_count=0, row_count=0, total_row_count=None, truncated=False,
+        query_run_id="qr_1", execution_time_ms=1, warning=None,
+    )
+    assert _rows_from_response(unverifiable) is None
+
+    # Driven end to end: the client's body says nothing verifiable, so the rows
+    # come from the persisted result instead of coming back empty.
+    client = FakeSourceClient(truncated=False, body_total=None)
+    client._body_total = None
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    assert len(rows) == 5
+
+
+def test_a_body_contradicting_its_own_count_raises() -> None:
+    """Present but disagreeing is different from absent: no route resolves that."""
+    client = FakeSourceClient(truncated=False, body_total=9)
+    with pytest.raises(IncompleteReadError):
+        client.read_rows("SELECT * FROM public.t", database_id=DB)
+
+
+def test_a_missing_truncated_flag_does_not_open_the_fast_path() -> None:
+    """`is False`, not falsiness.
+
+    The field was added in a later SDK than the endpoint, so a null read as "not
+    truncated" would hand back the head of a result as the whole of it.
+    """
+    ambiguous = QueryResponse.model_construct(
+        result_id="rslt_1", columns=["id"], rows=[[1]], nullable=[],
+        preview_row_count=1, row_count=1, total_row_count=1, truncated=None,
+        query_run_id="qr_1", execution_time_ms=1, warning=None,
+    )
+    assert ambiguous.truncated is not False
