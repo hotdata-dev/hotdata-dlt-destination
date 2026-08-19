@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!--
+Changelog style — terse "bullet + brief why":
+- One bullet per user-facing change. State what changed; add a short clause of
+  rationale only where it matters (breaking changes, gotchas, version bumps).
+- Keep symbol/API names and version requirements; drop mechanism and backstory
+  (the git history holds those). These notes are for a reader deciding whether
+  to upgrade.
+- Prefer one bullet with semicolon-joined clauses over nested sub-bullets.
+- Group under ### Added / Changed / Fixed / Removed. Mark breaking changes
+  **Breaking:**. See the released entries below for the target density.
+-->
+
+## [0.14.0] - 2026-08-19
+
 ### Changed
 
 - `HotdataSourceClient.read_rows` now takes the query response body when it is the
@@ -47,18 +61,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `binary_view`, list views, and views nested in structs or dictionary encodings)
   are materialized before rows are handed on, since dlt rejects them; an empty
   result still yields one zero-row batch so the destination learns the schema.
-
-<!--
-Changelog style — terse "bullet + brief why":
-- One bullet per user-facing change. State what changed; add a short clause of
-  rationale only where it matters (breaking changes, gotchas, version bumps).
-- Keep symbol/API names and version requirements; drop mechanism and backstory
-  (the git history holds those). These notes are for a reader deciding whether
-  to upgrade.
-- Prefer one bullet with semicolon-joined clauses over nested sub-bullets.
-- Group under ### Added / Changed / Fixed / Removed. Mark breaking changes
-  **Breaking:**. See the released entries below for the target density.
--->
 
 ## [0.13.2] - 2026-08-18
 
