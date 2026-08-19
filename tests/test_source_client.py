@@ -248,6 +248,8 @@ def test_read_rows_takes_the_response_body_when_it_is_the_whole_result() -> None
     assert rows[0] == {"id": 1, "name": "a"}
     assert len(rows) == 5
     assert len(client.submitted) == 1
+    # `fetch_calls == 0` is what says the body was used rather than the persisted
+    # result. It is falsifiable because the fallback tests assert `== 1`.
     assert client.fetch_calls == 0
 
 
@@ -1092,13 +1094,6 @@ def test_an_unverifiable_body_falls_back_instead_of_being_trusted() -> None:
     rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
     assert len(rows) == 5
     assert client.fetch_calls == 1  # went to the persisted result
-
-
-def test_a_verifiable_body_does_not_touch_the_persisted_result() -> None:
-    """The other half of the pair, so the counter means something."""
-    client = FakeSourceClient(truncated=False)
-    assert len(client.read_rows("SELECT * FROM public.t", database_id=DB)) == 5
-    assert client.fetch_calls == 0
 
 
 def test_a_null_truncated_flag_does_not_open_the_fast_path() -> None:
