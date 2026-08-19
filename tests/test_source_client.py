@@ -28,8 +28,8 @@ from hotdata_dlt_destination.source_client import (
     _has_list_view,
     _materialized,
     _materialized_schema,
-    _rows_from_response,
     _response_row_count,
+    _rows_from_response,
     _sliced,
     _total_from_headers,
 )
@@ -45,6 +45,11 @@ CANNED = pa.table(
         "name": ["a", "b", "c", "d", "e"],
     }
 )
+
+
+# Distinguishes "use the row count of the body" from "omit the field entirely";
+# `None` cannot, because None is also the value that means absent on the wire.
+_ABSENT = object()
 
 
 class _FakeHeaders(dict[str, str]):
@@ -90,8 +95,8 @@ class FakeSourceClient(HotdataSourceClient):
         result_id: str | None = "rslt_1",
         header_name: str = "X-Total-Row-Count",
         unpersisted_rows: int = 0,
-        truncated: bool = False,
-        body_total: int | None = None,
+        truncated: bool | None = False,
+        body_total: object = _ABSENT,
         body_rows_as_dicts: bool = False,
     ) -> None:
         # Deliberately no super().__init__(): that would build a real API client.
@@ -110,6 +115,10 @@ class FakeSourceClient(HotdataSourceClient):
         # persisted result is fetched instead.
         self._truncated = truncated
         self._body_total = body_total
+        # Counts trips to the persisted result, so a test can tell WHICH route
+        # produced its rows instead of inferring it from a row count both routes
+        # would satisfy.
+        self.fetch_calls = 0
         # The SDK types `rows` as a list of LISTS, so positional is the shape the
         # real API sends and therefore the default here. The dict form is opt-in,
         # covering a server or fixture that pre-zips it.
@@ -129,7 +138,7 @@ class FakeSourceClient(HotdataSourceClient):
             if self._body_rows_as_dicts
             else [[r[c] for c in self._table.column_names] for r in dict_rows]
         )
-        total = len(rows) if self._body_total is None else self._body_total
+        total = len(rows) if self._body_total is _ABSENT else self._body_total
         return QueryResponse.model_construct(
             result_id=self._result_id,
             columns=list(self._table.column_names),
@@ -172,6 +181,7 @@ class FakeSourceClient(HotdataSourceClient):
         return self._resolve(self._query(sql, database_id=database_id), database_id=database_id)
 
     def _fetch_result_arrow(self, result_id: str, *, database_id: str) -> pa.Table:
+        self.fetch_calls += 1
         return self._table
 
     def close(self) -> None:
@@ -233,9 +243,12 @@ def test_read_rows_takes_the_response_body_when_it_is_the_whole_result() -> None
     """
     client = FakeSourceClient(truncated=False)
     rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    # Positional is the shape the SDK types and the API sends, so this is also
+    # what covers the zip branch -- the dict branch is the opt-in one below.
     assert rows[0] == {"id": 1, "name": "a"}
     assert len(rows) == 5
     assert len(client.submitted) == 1
+    assert client.fetch_calls == 0
 
 
 def test_read_rows_falls_back_to_the_persisted_result_when_the_body_is_capped() -> None:
@@ -1025,18 +1038,6 @@ def test_a_list_view_inside_a_map_takes_the_rebuild_path() -> None:
 # --- the body route's own contract -------------------------------------------
 
 
-def test_the_body_route_reads_the_positional_wire_shape() -> None:
-    """The SDK types `rows` as a list of lists, so this is the real shape.
-
-    The dict branch is for a server or fixture that pre-zips; if only that one were
-    covered, the branch running in production would be the one CI never touches.
-    """
-    client = FakeSourceClient(truncated=False)
-    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
-    assert rows[0] == {"id": 1, "name": "a"}
-    assert len(rows) == 5
-
-
 def test_the_body_route_also_reads_pre_zipped_rows() -> None:
     client = FakeSourceClient(truncated=False, body_rows_as_dicts=True)
     assert client.read_rows("SELECT * FROM public.t", database_id=DB)[0] == {
@@ -1074,8 +1075,11 @@ def test_an_unverifiable_body_falls_back_instead_of_being_trusted() -> None:
     Both fields failing open at once is what would otherwise turn a response
     carrying no rows into a successful empty read -- and under
     write_disposition="replace" an empty read truncates the destination table and
-    reports success. The fallback costs one uncommon read the slower path; it never
-    trusts a body it could not verify.
+    reports success.
+
+    Asserted on `fetch_calls`, not on the row count: both routes return the same
+    five rows from the fake's table, so a count assertion would pass even if the
+    fallback were deleted.
     """
     unverifiable = QueryResponse.model_construct(
         result_id="rslt_1", columns=["id"], rows=[], nullable=[],
@@ -1084,30 +1088,59 @@ def test_an_unverifiable_body_falls_back_instead_of_being_trusted() -> None:
     )
     assert _rows_from_response(unverifiable) is None
 
-    # Driven end to end: the client's body says nothing verifiable, so the rows
-    # come from the persisted result instead of coming back empty.
     client = FakeSourceClient(truncated=False, body_total=None)
-    client._body_total = None
     rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
     assert len(rows) == 5
+    assert client.fetch_calls == 1  # went to the persisted result
 
 
-def test_a_body_contradicting_its_own_count_raises() -> None:
-    """Present but disagreeing is different from absent: no route resolves that."""
-    client = FakeSourceClient(truncated=False, body_total=9)
-    with pytest.raises(IncompleteReadError):
-        client.read_rows("SELECT * FROM public.t", database_id=DB)
+def test_a_verifiable_body_does_not_touch_the_persisted_result() -> None:
+    """The other half of the pair, so the counter means something."""
+    client = FakeSourceClient(truncated=False)
+    assert len(client.read_rows("SELECT * FROM public.t", database_id=DB)) == 5
+    assert client.fetch_calls == 0
 
 
-def test_a_missing_truncated_flag_does_not_open_the_fast_path() -> None:
-    """`is False`, not falsiness.
+def test_a_null_truncated_flag_does_not_open_the_fast_path() -> None:
+    """`is False`, not falsiness -- asserted on behaviour, not on the model.
 
-    The field was added in a later SDK than the endpoint, so a null read as "not
-    truncated" would hand back the head of a result as the whole of it.
+    A null flag is falsy, so the body is present and tempting; the earlier version
+    of this test asserted `None is not False`, which holds no matter what the
+    source does and would keep holding if the check regressed.
     """
-    ambiguous = QueryResponse.model_construct(
-        result_id="rslt_1", columns=["id"], rows=[[1]], nullable=[],
-        preview_row_count=1, row_count=1, total_row_count=1, truncated=None,
-        query_run_id="qr_1", execution_time_ms=1, warning=None,
-    )
-    assert ambiguous.truncated is not False
+    client = FakeSourceClient(truncated=None)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    assert len(rows) == 5
+    assert client.fetch_calls == 1  # refused the body, took the persisted result
+
+
+def test_read_rows_returns_an_unpersisted_but_verified_body() -> None:
+    """Diverges from read_arrow deliberately, and this is where it is pinned.
+
+    A result that fit inline but could not be persisted makes the Arrow path raise
+    -- it has no file to read. Here the body IS the answer and its count checks
+    out, so the rows are returned rather than refused.
+    """
+    client = FakeSourceClient(truncated=False, result_id=None)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    assert len(rows) == 5
+    assert client.fetch_calls == 0
+    # The Arrow path, same response, still refuses.
+    with pytest.raises(UnverifiableReadError, match="could not be persisted"):
+        FakeSourceClient(result_id=None, unpersisted_rows=5).read_arrow(
+            "SELECT * FROM public.t", database_id=DB
+        )
+
+
+def test_read_rows_returns_empty_for_an_unpersisted_but_verified_zero() -> None:
+    """A verified zero is a true zero.
+
+    The Arrow path refuses this case because an empty SELECT still has a column
+    shape a destination needs. Dicts carry no schema, so that reason does not
+    apply here -- and the comment in `_resolve` arguing the other way is about the
+    Arrow contract, not this one.
+    """
+    empty = CANNED.schema.empty_table()
+    client = FakeSourceClient(table=empty, truncated=False, result_id=None)
+    assert client.read_rows("SELECT * FROM public.t", database_id=DB) == []
+    assert client.fetch_calls == 0

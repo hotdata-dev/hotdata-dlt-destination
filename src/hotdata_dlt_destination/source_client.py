@@ -205,7 +205,7 @@ class HotdataSourceClient(ManagedDatabaseClient):
         whole result in memory, so the caller's query should carry its own
         ``LIMIT``.
 
-TAKES THE RESPONSE BODY WHEN IT IS THE WHOLE RESULT, AND ONLY THEN.
+        TAKES THE RESPONSE BODY WHEN IT IS THE WHOLE RESULT, AND ONLY THEN.
         ``truncated`` is documented as "True when ``rows`` is a bounded preview of
         a larger result", so an affirmative ``False`` is the API saying the body is
         everything. That is checked as ``is False`` rather than for falsiness: the
