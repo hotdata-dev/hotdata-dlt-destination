@@ -873,3 +873,48 @@ def test_a_non_numeric_total_header_is_an_unverifiable_read() -> None:
     """
     with pytest.raises(UnverifiableReadError, match="not a row count"):
         _total_from_headers({"X-Total-Row-Count": "1,024"}, result_id="rslt_1")
+
+
+def test_a_map_of_string_view_is_materialized_through_the_read_path() -> None:
+    """Drives a real map ARRAY, not just its type.
+
+    `_has_list_view` is False for `map<string_view, int64>`, so this column takes
+    `data.cast(schema)` rather than the Python rebuild -- and that cast is
+    between two map types whose `entries` struct differs. Measured: pyarrow
+    implements it, so the cast path is correct for maps and they do not belong
+    with the list views. This test is what says so.
+    """
+    mapped = pa.map_(
+        pa.field("key", pa.string_view(), nullable=False), pa.field("value", pa.int64())
+    )
+    viewed = pa.table({"m": pa.array([[("a", 1), ("b", 2)]], type=mapped)})
+    out = FakeSourceClient(table=viewed, total=1).read_arrow("SELECT * FROM t", database_id=DB)
+    out.validate(full=True)
+    result = out.schema.field("m").type
+    assert pa.types.is_map(result)
+    assert result.key_field.type == pa.string()
+    assert result.key_field.nullable is False
+    assert out.column("m").to_pylist() == [[("a", 1), ("b", 2)]]
+
+
+def test_a_fixed_size_list_of_string_view_is_materialized_through_the_read_path() -> None:
+    """Same as above for fixed-size lists, including that the width survives."""
+    sized = pa.list_(pa.field("item", pa.string_view()), 2)
+    viewed = pa.table({"f": pa.array([["x", "y"], ["z", "w"]], type=sized)})
+    out = FakeSourceClient(table=viewed, total=2).read_arrow("SELECT * FROM t", database_id=DB)
+    out.validate(full=True)
+    result = out.schema.field("f").type
+    assert pa.types.is_fixed_size_list(result)
+    assert result.list_size == 2
+    assert result.value_field.type == pa.string()
+    assert out.column("f").to_pylist() == [["x", "y"], ["z", "w"]]
+
+
+def test_a_list_view_inside_a_map_takes_the_rebuild_path() -> None:
+    """The nesting that does need rebuilding, so the two paths stay distinguished."""
+    inner = pa.map_(
+        pa.field("key", pa.string(), nullable=False),
+        pa.field("value", pa.list_view(pa.int64())),
+    )
+    assert _has_list_view(inner)
+    assert _materialized(inner).item_field.type == pa.list_(pa.int64())
