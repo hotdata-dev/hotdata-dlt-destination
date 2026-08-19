@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Hotdata as a dlt **source**: `hotdata_dlt_destination.sources.hotdata_table` and
+  `hotdata_query` return dlt resources that read a managed table or a SQL query,
+  yielding Arrow batches so engine types survive to the destination. Config
+  resolves from `[sources.hotdata]` (`database_id`, `workspace_id`, and
+  `credentials.api_key`, matching the destination's nesting); the read database is
+  per-resource, so a pipeline can read one database and write another. Column
+  projection is `included_columns=` — kept distinct from dlt's `columns` schema
+  hint, which passes through. Full reads only — no cursor/incremental arguments yet.
+- `HotdataSourceClient` (`source_client.py`) reads through the **persisted
+  result** rather than the inline query body, and asserts the rows it received
+  against the result's authoritative `X-Total-Row-Count`, raising
+  `IncompleteReadError` on a mismatch or `UnverifiableReadError` when the count is
+  absent. The inline body is a server-capped preview (10k rows / 8 MiB by
+  default, not client-overridable), so reads above the cap previously could not
+  complete; correctness costs latency here — a 50k-row read is ~2.5s versus
+  ~100ms for a capped inline read. A query whose result could not be persisted
+  raises rather than reading as zero rows. Arrow view layouts (`string_view`,
+  `binary_view`, list views, and views nested in structs or dictionary encodings)
+  are materialized before rows are handed on, since dlt rejects them; an empty
+  result still yields one zero-row batch so the destination learns the schema.
+
 <!--
 Changelog style — terse "bullet + brief why":
 - One bullet per user-facing change. State what changed; add a short clause of

@@ -15,6 +15,7 @@ dlt handles extraction, schema inference, and batching. This package is a **nati
 - **Native destination** — nested/child tables, dlt internal columns (`_dlt_id`, `_dlt_load_id`), schema versioning, and load tracking, all preserved.
 - **Incremental resume** — pipeline state is persisted in the managed database, so incremental sources pick up where they left off across runs.
 - **Read your data back** — query loaded tables through `pipeline.dataset()` (pandas / Arrow / fluent SQL / ibis), server-side on Apache DataFusion. No Hotdata-specific code.
+- **Hotdata as a source** — `hotdata_table()` / `hotdata_query()` turn a managed table or a SQL query into dlt resources, so you can load *out* of Hotdata into any dlt destination.
 - **In-place schema evolution** — new tables and columns are added to an existing database without recreating it or moving data.
 - **Append / replace / merge (upsert)** — standard dlt write dispositions, plus an `insert-only` combine.
 
@@ -24,6 +25,7 @@ dlt handles extraction, schema inference, and batching. This package is a **nati
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [Read your data back](#read-your-data-back)
+- [Hotdata as a source](#hotdata-as-a-source)
 - [Feature support](#feature-support)
 - [Configuration](#configuration)
 - [Write modes](#write-modes)
@@ -125,8 +127,89 @@ Queries run server-side on Hotdata's Apache DataFusion engine (Postgres-compatib
 
 You can also author queries with **ibis**, two ways. `dataset().table("orders").to_ibis()` gives an ibis table that dlt compiles to SQL and runs through the same client. `dataset().ibis()` returns a live `ibis.hotdata` backend — ibis expressions and raw SQL run server-side and come back as pandas/Arrow. The live backend needs the `[ibis]` extra (see [Install](#install)).
 
-This read interface is destination readback for data loaded by a dlt pipeline. It
-does not expose Hotdata managed tables as general-purpose dlt source resources.
+This read interface is destination **readback** — it addresses tables through the
+pipeline that loaded them. To read a Hotdata table as a pipeline *input*, including
+into a non-Hotdata destination, use the source resources below.
+
+## Hotdata as a source
+
+`hotdata_table()` and `hotdata_query()` turn a managed table or a SQL query into
+standard dlt resources, so Hotdata can be the extraction side of a pipeline:
+
+```python
+import dlt
+from hotdata_dlt_destination import hotdata
+from hotdata_dlt_destination.sources import hotdata_query, hotdata_table
+
+orders = hotdata_table(
+    "orders",
+    database_id="db_abc123",
+    workspace_id="your_workspace_id",
+    included_columns=["order_id", "customer", "total"],   # optional projection
+    primary_key="order_id",
+)
+
+spend = hotdata_query(
+    "SELECT customer, sum(total) AS spend FROM public.orders GROUP BY customer",
+    name="customer_spend",
+    database_id="db_abc123",
+    workspace_id="your_workspace_id",
+)
+
+# Hotdata -> anywhere
+dlt.pipeline("export", destination="duckdb", dataset_name="analytics").run([orders, spend])
+
+# Hotdata -> Hotdata (derive a table from a table)
+dlt.pipeline("derive", destination=hotdata(
+    workspace_id="your_workspace_id", database_id="db_target"
+)).run(spend)
+```
+
+Rows arrive as Arrow batches, so the engine's own types reach the destination
+without a Python round-trip. Standard resource hints apply — `table_name`,
+`write_disposition`, `primary_key`, `columns`. To restrict which columns are read,
+use `included_columns=[...]` on `hotdata_table`: it builds the SQL projection,
+and is a separate argument from dlt's `columns` hint so that passing a schema hint
+can never be mistaken for a projection. The source's physical
+layout is never copied to the destination: use
+[`hotdata_adapter`](#storage-layout-partition-and-sort-keys) to declare the target's
+partition and sort keys, because those describe how the new table will be queried.
+
+`database_id` is per resource, so a pipeline can read one managed database and
+write another. Credentials and ids resolve from `[sources.hotdata]` when not
+passed explicitly — the same nesting the destination uses, so both halves of a
+Hotdata-to-Hotdata pipeline are configured the same way:
+
+```toml
+[sources.hotdata]
+workspace_id = "your_workspace_id"
+database_id = "db_abc123"
+
+[sources.hotdata.credentials]
+api_key = "your_api_key"
+```
+
+Equivalently `SOURCES__HOTDATA__CREDENTIALS__API_KEY` in the environment, or
+inline as `credentials={"api_key": "..."}`. A read with no key resolves fails
+while the resource is built, naming the setting to fix, rather than as a 401 from
+inside a load.
+
+**Completeness is checked, not assumed.** A read goes to the query's persisted
+result and compares the rows it received against the result's authoritative row
+count, raising `IncompleteReadError` if they disagree (or `UnverifiableReadError`
+if the count is unavailable). A partial result is indistinguishable from a whole
+one by its contents, so a short read has to fail rather than return a prefix a
+caller would treat as complete. This costs latency — a 50,000-row read is a couple
+of seconds rather than a couple of hundred milliseconds — and it is what lets a
+read return more rows than a synchronous query response can carry.
+
+**Full reads only, for now.** There is deliberately no cursor or incremental
+argument. An incremental read over a managed table needs a column that never
+decreases for a row written later, plus a tiebreaker when it repeats; a table has
+no such column unless something stamped one, and naming the wrong one fails by
+silently skipping rows rather than by erroring. Bound the read yourself
+(`limit=`, or a `WHERE` in `hotdata_query`) and use dlt's `write_disposition` for
+replace-mode snapshots or merge-on-key loads.
 
 ## Feature support
 
@@ -243,6 +326,8 @@ Notes:
 | dlt internal columns (`_dlt_id`, `_dlt_load_id`) | ✅ | Preserved, never stripped |
 | dlt system tables (`_dlt_loads`, `_dlt_version`) | ✅ | Persisted in the managed database |
 | Pipeline state sync (`WithStateSync`) | ✅ | Incremental sources resume across runs |
+| Source resources (`hotdata_table` / `hotdata_query`) | ✅ | Read a managed table or SQL query into any dlt destination; full reads, Arrow batches — see [Hotdata as a source](#hotdata-as-a-source) |
+| Incremental source (cursor / change feed) | 🔜 | Full reads today; bound the query yourself |
 | Dataset read API (`pipeline.dataset()`) | ✅ | Read loaded data as pandas / arrow / fluent SQL, server-side on DataFusion — see [Read your data back](#read-your-data-back) |
 | ibis expressions (`.table("t").to_ibis()`) | ✅ | Built as ibis, compiled to SQL, executed via the sql_client |
 | Live ibis backend (`dataset().ibis()`) | ✅ | Live `ibis.hotdata` connection to the remote engine; needs the `[ibis]` extra |
