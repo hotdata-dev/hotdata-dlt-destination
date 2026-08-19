@@ -327,11 +327,21 @@ def _materialized(field_type: pa.DataType) -> pa.DataType:
             _materialized_field(field_type.value_field), field_type.list_size
         )
     if pat.is_map(field_type):
-        return pa.map_(
-            _materialized_field(field_type.key_field),
-            _materialized_field(field_type.item_field),
-            keys_sorted=field_type.keys_sorted,
-        )
+        key_field = _materialized_field(field_type.key_field)
+        item_field = _materialized_field(field_type.item_field)
+        if key_field.equals(field_type.key_field) and item_field.equals(
+            field_type.item_field
+        ):
+            # Nothing inside needed materialising, so hand back the original
+            # rather than an equivalent. `pa.map_` cannot carry the entries field
+            # through — it always names it `entries` — and field names take part
+            # in Arrow type equality, so rebuilding a view-free map would make it
+            # compare as changed and send the column through a cast it did not
+            # need. It also refuses a nullable key field outright
+            # (`TypeError: Map key field should be non-nullable`), which would
+            # fail inside the normaliser for a map that was only passing through.
+            return field_type
+        return pa.map_(key_field, item_field, keys_sorted=field_type.keys_sorted)
     if pat.is_list_view(field_type):
         return pa.list_(_materialized_field(field_type.value_field))
     if pat.is_large_list_view(field_type):

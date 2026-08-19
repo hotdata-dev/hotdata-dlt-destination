@@ -705,9 +705,32 @@ def test_a_schema_with_nothing_to_change_is_returned_untouched() -> None:
         [
             pa.field("xs", pa.list_(pa.field("elem", pa.int64(), nullable=False))),
             pa.field("s", pa.string()),
+            # A view-free map is the case a rebuild cannot round-trip: `pa.map_`
+            # always names the entries field `entries`, and field names count
+            # towards Arrow type equality -- so rebuilding one would make it
+            # compare as changed and send the column through a needless cast.
+            pa.field(
+                "m",
+                pa.map_(
+                    pa.field("key", pa.string(), nullable=False),
+                    pa.field("value", pa.int64()),
+                ),
+            ),
         ]
     )
     assert _materialized_schema(plain).equals(plain)
+
+
+def test_a_view_free_map_is_returned_as_the_same_type_object() -> None:
+    """Identity, not just equality.
+
+    `pa.map_` also refuses a nullable key field outright, so a map that was only
+    passing through must never reach the rebuild.
+    """
+    plain = pa.map_(
+        pa.field("key", pa.string(), nullable=False), pa.field("value", pa.int64())
+    )
+    assert _materialized(plain) is plain
 
 
 # --- the asynchronous submit path --------------------------------------------
