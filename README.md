@@ -194,6 +194,15 @@ inline as `credentials={"api_key": "..."}`. A read with no key resolves fails
 while the resource is built, naming the setting to fix, rather than as a 401 from
 inside a load.
 
+`hotdata_table` and `hotdata_query` always read through the persisted result, so
+the Arrow types they yield never depend on how large the answer happened to be.
+The lower-level `HotdataSourceClient.read_rows` — for callers that want plain
+dicts — takes the response body directly when it already holds the whole result,
+which is one request instead of four; it falls back to the persisted result only
+when the API capped the body. Row counts are verified on both routes, but the two
+type values differently (JSON text versus Arrow `datetime` for a timestamp), so
+reach for the Arrow methods when you need one stable schema.
+
 **Completeness is checked, not assumed.** A read goes to the query's persisted
 result and compares the rows it received against the result's authoritative row
 count, raising `IncompleteReadError` if they disagree (or `UnverifiableReadError` if the

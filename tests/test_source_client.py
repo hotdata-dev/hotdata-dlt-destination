@@ -29,6 +29,7 @@ from hotdata_dlt_destination.source_client import (
     _materialized,
     _materialized_schema,
     _response_row_count,
+    _rows_from_response,
     _sliced,
     _total_from_headers,
 )
@@ -44,6 +45,11 @@ CANNED = pa.table(
         "name": ["a", "b", "c", "d", "e"],
     }
 )
+
+
+# Distinguishes "use the row count of the body" from "omit the field entirely";
+# `None` cannot, because None is also the value that means absent on the wire.
+_ABSENT = object()
 
 
 class _FakeHeaders(dict[str, str]):
@@ -89,6 +95,9 @@ class FakeSourceClient(HotdataSourceClient):
         result_id: str | None = "rslt_1",
         header_name: str = "X-Total-Row-Count",
         unpersisted_rows: int = 0,
+        truncated: bool | None = False,
+        body_total: object = _ABSENT,
+        body_rows_as_dicts: bool = False,
     ) -> None:
         # Deliberately no super().__init__(): that would build a real API client.
         # _runtime still has to exist -- the real streaming path reads
@@ -101,10 +110,48 @@ class FakeSourceClient(HotdataSourceClient):
         self._result_id = result_id
         self._header_name = header_name
         self._unpersisted_rows = unpersisted_rows
+        # `truncated` drives which route read_rows takes: False = the body is the
+        # whole result and is used directly; True = the body is a prefix, so the
+        # persisted result is fetched instead.
+        self._truncated = truncated
+        self._body_total = body_total
+        # Counts trips to the persisted result, so a test can tell WHICH route
+        # produced its rows instead of inferring it from a row count both routes
+        # would satisfy.
+        self.fetch_calls = 0
+        # The SDK types `rows` as a list of LISTS, so positional is the shape the
+        # real API sends and therefore the default here. The dict form is opt-in,
+        # covering a server or fixture that pre-zips it.
+        self._body_rows_as_dicts = body_rows_as_dicts
         self.submitted: list[str] = []
         self.closed = False
 
     # --- faked SDK surface -------------------------------------------------
+
+    def _query(self, sql: str, *, database_id: str) -> object:
+        """A synchronous response whose body carries the fake's table."""
+        assert database_id == DB
+        self.submitted.append(sql)
+        dict_rows = self._table.to_pylist()
+        rows = (
+            dict_rows
+            if self._body_rows_as_dicts
+            else [[r[c] for c in self._table.column_names] for r in dict_rows]
+        )
+        total = len(rows) if self._body_total is _ABSENT else self._body_total
+        return QueryResponse.model_construct(
+            result_id=self._result_id,
+            columns=list(self._table.column_names),
+            rows=[] if self._truncated else rows,
+            nullable=[],
+            preview_row_count=0 if self._truncated else len(rows),
+            row_count=0 if self._truncated else len(rows),
+            total_row_count=total,
+            truncated=self._truncated,
+            query_run_id="qr_1",
+            execution_time_ms=1,
+            warning=None,
+        )
 
     def _query_database_scoped(self, sql: str, *, database_id: str) -> str | None:
         # Retained for tests that drive the shared client's own path.
@@ -112,9 +159,10 @@ class FakeSourceClient(HotdataSourceClient):
         self.submitted.append(sql)
         return self._result_id
 
-    def _submit(self, sql: str, *, database_id: str) -> tuple[str, int] | None:
+    def _resolve(self, response: object, *, database_id: str) -> tuple[str, int] | None:
+        """Stands in for the readiness wait. Faked at this seam rather than at
+        `_submit`, so `read_rows`' choice of route is the real one."""
         assert database_id == DB
-        self.submitted.append(sql)
         if self._result_id is None:
             if self._unpersisted_rows > 0:
                 raise UnverifiableReadError(
@@ -124,12 +172,16 @@ class FakeSourceClient(HotdataSourceClient):
             return None
         # Mirrors the real method: the readiness wait is where the total comes
         # from, so a missing header surfaces here too.
-        response = _FakeStatusResponse({self._header_name: str(self._total)})
+        status = _FakeStatusResponse({self._header_name: str(self._total)})
         return self._result_id, _total_from_headers(
-            response.headers, result_id=self._result_id
+            status.headers, result_id=self._result_id
         )
 
+    def _submit(self, sql: str, *, database_id: str) -> tuple[str, int] | None:
+        return self._resolve(self._query(sql, database_id=database_id), database_id=database_id)
+
     def _fetch_result_arrow(self, result_id: str, *, database_id: str) -> pa.Table:
+        self.fetch_calls += 1
         return self._table
 
     def close(self) -> None:
@@ -182,10 +234,59 @@ def test_read_arrow_returns_every_row() -> None:
     assert client.submitted == ["SELECT * FROM public.t"]
 
 
-def test_read_rows_returns_dicts() -> None:
-    rows = FakeSourceClient().read_rows("SELECT * FROM public.t", database_id=DB)
+def test_read_rows_takes_the_response_body_when_it_is_the_whole_result() -> None:
+    """One request, not four.
+
+    `truncated: false` means the body IS the whole result, so completeness is
+    already established and the persisted result would be three extra round trips
+    plus a readiness wait for the same rows.
+    """
+    client = FakeSourceClient(truncated=False)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    # Positional is the shape the SDK types and the API sends, so this is also
+    # what covers the zip branch -- the dict branch is the opt-in one below.
     assert rows[0] == {"id": 1, "name": "a"}
     assert len(rows) == 5
+    assert len(client.submitted) == 1
+    # `fetch_calls == 0` is what says the body was used rather than the persisted
+    # result. It is falsifiable because the fallback tests assert `== 1`.
+    assert client.fetch_calls == 0
+
+
+def test_read_rows_falls_back_to_the_persisted_result_when_the_body_is_capped() -> None:
+    """A capped body is a prefix, so the rows have to come from the stored result.
+
+    This is the case the persisted path earns its cost in: an inline answer is
+    capped by a byte budget, so a wide table can cap at a few hundred rows.
+    """
+    client = FakeSourceClient(truncated=True)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    assert len(rows) == 5
+    assert rows[0]["id"] == 1
+
+
+def test_read_rows_refuses_a_body_that_disagrees_with_its_own_count() -> None:
+    """Same contract as the persisted path, applied to the fast one.
+
+    An uncapped response is supposed to carry the whole result; a body whose row
+    count contradicts `total_row_count` is not something to hand on as complete.
+    """
+    client = FakeSourceClient(truncated=False, body_total=9)
+    with pytest.raises(IncompleteReadError):
+        client.read_rows("SELECT * FROM public.t", database_id=DB)
+
+
+def test_the_arrow_methods_always_use_the_persisted_result() -> None:
+    """The strict contract, unchanged.
+
+    read_rows may vary its route; the Arrow methods must not, because their whole
+    point is engine types that do not depend on how large the answer happened to
+    be.
+    """
+    client = FakeSourceClient(truncated=False)
+    table = client.read_arrow("SELECT * FROM public.t", database_id=DB)
+    assert table.num_rows == 5
+    assert table is client._table
 
 
 def test_a_statement_with_no_persisted_result_is_empty_not_an_error() -> None:
@@ -934,3 +1035,107 @@ def test_a_list_view_inside_a_map_takes_the_rebuild_path() -> None:
     assert result.item_field.type == pa.list_(pa.int64())
     assert result.key_field.nullable is False
     assert out.column("m").to_pylist() == [[("a", [1, 2])], [("b", [3])]]
+
+
+# --- the body route's own contract -------------------------------------------
+
+
+def test_the_body_route_also_reads_pre_zipped_rows() -> None:
+    client = FakeSourceClient(truncated=False, body_rows_as_dicts=True)
+    assert client.read_rows("SELECT * FROM public.t", database_id=DB)[0] == {
+        "id": 1,
+        "name": "a",
+    }
+
+
+def test_a_row_of_the_wrong_width_is_refused_rather_than_truncated() -> None:
+    """`strict=True`: a short row means the arrays do not describe each other.
+
+    Dropping the tail would produce rows missing columns, which the row COUNT
+    cannot detect -- it counts rows, not fields.
+    """
+    response = QueryResponse.model_construct(
+        result_id="rslt_1",
+        columns=["id", "name"],
+        rows=[[1, "a"], [2]],
+        nullable=[],
+        preview_row_count=2,
+        row_count=2,
+        total_row_count=2,
+        truncated=False,
+        query_run_id="qr_1",
+        execution_time_ms=1,
+        warning=None,
+    )
+    with pytest.raises(ValueError, match="zip"):
+        _rows_from_response(response)
+
+
+def test_an_unverifiable_body_falls_back_instead_of_being_trusted() -> None:
+    """No `total_row_count` means the body cannot be checked, so it is not used.
+
+    Both fields failing open at once is what would otherwise turn a response
+    carrying no rows into a successful empty read -- and under
+    write_disposition="replace" an empty read truncates the destination table and
+    reports success.
+
+    Asserted on `fetch_calls`, not on the row count: both routes return the same
+    five rows from the fake's table, so a count assertion would pass even if the
+    fallback were deleted.
+    """
+    unverifiable = QueryResponse.model_construct(
+        result_id="rslt_1", columns=["id"], rows=[], nullable=[],
+        preview_row_count=0, row_count=0, total_row_count=None, truncated=False,
+        query_run_id="qr_1", execution_time_ms=1, warning=None,
+    )
+    assert _rows_from_response(unverifiable) is None
+
+    client = FakeSourceClient(truncated=False, body_total=None)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    assert len(rows) == 5
+    assert client.fetch_calls == 1  # went to the persisted result
+
+
+def test_a_null_truncated_flag_does_not_open_the_fast_path() -> None:
+    """`is False`, not falsiness -- asserted on behaviour, not on the model.
+
+    A null flag is falsy, so the body is present and tempting; the earlier version
+    of this test asserted `None is not False`, which holds no matter what the
+    source does and would keep holding if the check regressed.
+    """
+    client = FakeSourceClient(truncated=None)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    assert len(rows) == 5
+    assert client.fetch_calls == 1  # refused the body, took the persisted result
+
+
+def test_read_rows_returns_an_unpersisted_but_verified_body() -> None:
+    """Diverges from read_arrow deliberately, and this is where it is pinned.
+
+    A result that fit inline but could not be persisted makes the Arrow path raise
+    -- it has no file to read. Here the body IS the answer and its count checks
+    out, so the rows are returned rather than refused.
+    """
+    client = FakeSourceClient(truncated=False, result_id=None)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    assert len(rows) == 5
+    assert client.fetch_calls == 0
+    # The Arrow path, same response, still refuses.
+    with pytest.raises(UnverifiableReadError, match="could not be persisted"):
+        FakeSourceClient(result_id=None, unpersisted_rows=5).read_arrow(
+            "SELECT * FROM public.t", database_id=DB
+        )
+
+
+def test_read_rows_returns_empty_for_an_unpersisted_but_verified_zero() -> None:
+    """A verified zero is a true zero.
+
+    The Arrow path refuses this case because an empty SELECT still has a column
+    shape a destination needs. Dicts carry no schema, so that reason does not
+    apply here -- and the comment in `_resolve` arguing the other way is about the
+    Arrow contract, not this one.
+    """
+    empty = CANNED.schema.empty_table()
+    client = FakeSourceClient(table=empty, truncated=False, result_id=None)
+    assert client.read_rows("SELECT * FROM public.t", database_id=DB) == []
+    assert client.fetch_calls == 0

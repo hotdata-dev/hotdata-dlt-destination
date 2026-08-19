@@ -4,14 +4,20 @@ Turns a SQL string into every row the query produced, or raises. The
 "or raises" is the whole point of this module, and it is why the read does not
 use the obvious response body.
 
-WHY NOT THE INLINE RESPONSE. ``POST /v1/query`` answers synchronously with a
-**bounded preview** — the server caps it (10k rows / 8 MiB by default) and there
-is no request parameter to lift the cap. A capped response is not an error: it
-carries ``truncated: true`` and a ``result_id`` naming the full result, which was
-streamed to storage in its entirety. Reading rows out of that body therefore
-yields the head of a result while looking exactly like a complete one. Every read
-here goes to the persisted result instead, where ``limit`` is unbounded by
-default.
+WHY THE INLINE RESPONSE IS NOT ENOUGH ON ITS OWN. ``POST /v1/query`` answers
+synchronously with a **bounded preview** — the server caps it (10k rows / 8 MiB by
+default) and there is no request parameter to lift the cap. A capped response is
+not an error: it carries ``truncated: true`` and a ``result_id`` naming the full
+result, which was streamed to storage in its entirety. Reading rows out of a
+capped body therefore yields the head of a result while looking exactly like a
+complete one.
+
+So the body is used only when it says, affirmatively, that it is the whole result
+AND its own row count agrees. :meth:`HotdataSourceClient.read_rows` does that and
+falls back to the persisted result otherwise; :meth:`read_arrow` and
+:meth:`read_arrow_batches` always use the persisted result, because their contract
+is engine types that do not vary with the size of the answer. Neither ever trusts
+a body it could not verify.
 
 WHY THE ROW COUNT IS ASSERTED. A short read that does not raise is
 indistinguishable from a complete one, and a caller that records progress from it
@@ -31,11 +37,12 @@ anything back, so a caller never has to know the distinction existed. Only the
 layout changes; values and nullability are untouched.
 
 WHAT IT COSTS. Going to the persisted result means waiting for it to be ready,
-and readiness is polled. Measured against a live workspace, a 50,000-row read is
-about 2.5s end to end: ~1.5s submit-and-wait, ~0.3s for the row count, ~0.75s for
-the Arrow body. Reading the same rows out of the inline body is roughly 100ms —
-but only while the result fits under the preview cap, above which that read does
-not return the rows at all. Slower and complete beats faster and silently short.
+and readiness is polled — measured against a live workspace, four requests and
+about 2.2s for a 10,000-row page against roughly 0.8s for the one-request body
+route. That is why the body is preferred where it can be trusted, and why the
+Arrow methods, which cannot use it, are the slower pair. Where the body cannot be
+trusted the persisted result is taken regardless of cost: slower and complete
+beats faster and silently short.
 The count is a second request rather than folded into the readiness poll because
 the poll lives in the shared client, and duplicating its sync/async branching to
 save ~12% of the latency would risk the two drifting.
@@ -128,6 +135,19 @@ class HotdataSourceClient(ManagedDatabaseClient):
             # A statement that produced no out-of-band result (DDL, or a query
             # the engine did not persist). An empty table, not an error.
             return pa.table({})
+        return self._read_ready(ready, database_id=database_id)
+
+    def _read_ready(self, ready: tuple[str, int], *, database_id: str) -> pa.Table:
+        """Fetch a ready result, refuse it if the row count disagrees, normalise it.
+
+        One place, because the check is the correctness-critical part and both the
+        Arrow path and :meth:`read_rows`' fallback need it. The retry boundary is
+        the reason it cannot simply be inlined at each call site: the base client
+        maps everything raised under ``_request_with_retry`` through
+        ``classify_sdk_error``, so an assertion raised in there would reach the
+        caller as a generic transport error, indistinguishable from a network
+        fault — and would be retried, which turns a refusal into a delay.
+        """
         result_id, expected = ready
         table = self._request_with_retry(
             lambda: self._fetch_result_arrow(result_id, database_id=database_id)
@@ -184,8 +204,48 @@ class HotdataSourceClient(ManagedDatabaseClient):
         For callers that transform row by row and do not want Arrow. Holds the
         whole result in memory, so the caller's query should carry its own
         ``LIMIT``.
+
+        TAKES THE RESPONSE BODY WHEN IT IS THE WHOLE RESULT, AND ONLY THEN.
+        ``truncated`` is documented as "True when ``rows`` is a bounded preview of
+        a larger result", so an affirmative ``False`` is the API saying the body is
+        everything. That is checked as ``is False`` rather than for falsiness: the
+        field was added in a later SDK than the endpoint, and a missing or null
+        value read as "not truncated" would hand back the head of a result as the
+        whole of it — the one outcome this module exists to prevent.
+
+        The body's own ``total_row_count`` is then compared against the rows it
+        carries. When that field is absent the body cannot be verified, and this
+        method does NOT fall back on the boolean alone: it takes the persisted
+        result instead. Both fields failing open at once is what would otherwise
+        turn a response carrying no rows into a successful empty read, which under
+        ``write_disposition="replace"`` truncates a destination table and reports
+        success.
+
+        Measured against a live workspace: the body route is one request and about
+        0.8s for 10,000 rows, the persisted route four requests and about 2.2s. The
+        persisted route is where the cost is earned — an inline answer is capped by
+        a BYTE budget, so a wide table can cap at a few hundred rows while the same
+        query on a narrow one returns ten thousand.
+
+        THE TWO PATHS TYPE VALUES DIFFERENTLY, and that is the trade this method
+        makes deliberately. The body is JSON, so a timestamp arrives as text; the
+        persisted result is Arrow, so the same timestamp arrives as a datetime.
+        Dicts are already a lossier representation than Arrow, and a caller asking
+        for them has accepted that — but a caller that needs one stable set of
+        types must use :meth:`read_arrow` or :meth:`read_arrow_batches`, which
+        always go to the persisted result and never vary.
         """
-        return self.read_arrow(sql, database_id=database_id).to_pylist()
+        response = self._query(sql, database_id=database_id)
+        if isinstance(response, QueryResponse) and response.truncated is False:
+            rows = _rows_from_response(response)
+            if rows is not None:
+                return rows
+        # Either the body is a preview, or it could not be verified. Both are
+        # answered by the persisted result, which this response already names.
+        ready = self._resolve(response, database_id=database_id)
+        if ready is None:
+            return []
+        return self._read_ready(ready, database_id=database_id).to_pylist()
 
     # --- internals --------------------------------------------------------
 
@@ -203,11 +263,23 @@ class HotdataSourceClient(ManagedDatabaseClient):
         this module exists to prevent. So the row count in the response decides
         which case it is, and the second one raises.
         """
-        response = self._request_with_retry(
+        return self._resolve(self._query(sql, database_id=database_id), database_id=database_id)
+
+    def _query(self, sql: str, *, database_id: str) -> object:
+        """Run the query and hand back the raw response, whatever shape it took."""
+        return self._request_with_retry(
             lambda: QueryApi(self._runtime.api).query(
                 QueryRequest(sql=sql), x_database_id=database_id
             )
         )
+
+    def _resolve(self, response: object, *, database_id: str) -> tuple[str, int] | None:
+        """A ready ``(result_id, total_rows)`` for a response, or ``None``.
+
+        Split from :meth:`_query` so a caller that has already read the response —
+        :meth:`read_rows`, deciding whether it needs the persisted result at all —
+        can reach the persisted result without submitting the query a second time.
+        """
         if isinstance(response, QueryResponse):
             if response.result_id is not None:
                 return self._await_result(response.result_id, database_id=database_id)
@@ -445,6 +517,44 @@ def _rebuilt(column: object, target: pa.DataType) -> object:
             [pa.array(chunk.to_pylist(), type=target) for chunk in column.chunks], type=target
         )
     return pa.array(column.to_pylist(), type=target)
+
+
+def _rows_from_response(response: QueryResponse) -> list[dict[str, Any]] | None:
+    """The rows of an uncapped response as dicts, or ``None`` if unverifiable.
+
+    ``None`` means "do not use this body" — the caller has a correct route
+    available (the persisted result) and should take it, so this reports rather
+    than raises. The body is usable only when ``total_row_count`` is present and
+    agrees with the rows carried; that is the same contract the persisted path
+    holds against ``X-Total-Row-Count``, and leaving it unchecked would rest the
+    whole guarantee on one boolean.
+
+    A body whose count is present and DISAGREES is a different thing: the response
+    contradicts itself, and no other route is going to resolve that, so it raises.
+
+    The wire shape is positional — the SDK types ``rows`` as a list of lists and
+    ``columns`` as a list of names — so ``zip`` is the real path and the dict
+    branch covers servers or fixtures that pre-zip it. ``strict=True`` because a
+    row of the wrong width means the two arrays do not describe each other, and
+    silently dropping the tail would produce rows missing columns that the row
+    COUNT cannot detect.
+    """
+    total = getattr(response, "total_row_count", None)
+    if total is None:
+        return None
+    columns, rows = response.columns or [], response.rows or []
+    out: list[dict[str, Any]] = (
+        list(rows)
+        if rows and isinstance(rows[0], dict)
+        else [dict(zip(columns, row, strict=True)) for row in rows]
+    )
+    if len(out) != int(total):
+        raise IncompleteReadError(
+            result_id=response.result_id or "(unpersisted)",
+            expected=int(total),
+            received=len(out),
+        )
+    return out
 
 
 def _describes_a_result(response: QueryResponse) -> bool:
