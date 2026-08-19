@@ -62,7 +62,6 @@ Changelog style — terse "bullet + brief why":
   are materialized before rows are handed on, since dlt rejects them; an empty
   result still yields one zero-row batch so the destination learns the schema.
 
-
 ## [0.13.2] - 2026-08-18
 
 ### Changed
