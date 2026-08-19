@@ -911,10 +911,26 @@ def test_a_fixed_size_list_of_string_view_is_materialized_through_the_read_path(
 
 
 def test_a_list_view_inside_a_map_takes_the_rebuild_path() -> None:
-    """The nesting that does need rebuilding, so the two paths stay distinguished."""
+    """The nesting that does need rebuilding, driven through the read path.
+
+    `_has_list_view` is True here, so this column goes to `_rebuilt` --
+    `pa.array(column.to_pylist(), type=...)`, where `to_pylist()` on a map yields
+    lists of (key, value) tuples. Whether `pa.array` accepts that shape back for
+    a map whose value is itself a list is the thing this exercises; measured, it
+    does. Keeps the rebuild path distinguished from the cast path the two tests
+    above cover.
+    """
     inner = pa.map_(
         pa.field("key", pa.string(), nullable=False),
         pa.field("value", pa.list_view(pa.int64())),
     )
     assert _has_list_view(inner)
     assert _materialized(inner).item_field.type == pa.list_(pa.int64())
+
+    viewed = pa.table({"m": pa.array([[("a", [1, 2])], [("b", [3])]], type=inner)})
+    out = FakeSourceClient(table=viewed, total=2).read_arrow("SELECT * FROM t", database_id=DB)
+    out.validate(full=True)
+    result = out.schema.field("m").type
+    assert result.item_field.type == pa.list_(pa.int64())
+    assert result.key_field.nullable is False
+    assert out.column("m").to_pylist() == [[("a", [1, 2])], [("b", [3])]]
