@@ -196,8 +196,9 @@ inside a load.
 
 **Completeness is checked, not assumed.** A read goes to the query's persisted
 result and compares the rows it received against the result's authoritative row
-count, raising `IncompleteReadError` if they disagree (or `UnverifiableReadError`
-if the count is unavailable). A partial result is indistinguishable from a whole
+count, raising `IncompleteReadError` if they disagree (or `UnverifiableReadError` if the
+count is unavailable) — both importable from
+`hotdata_dlt_destination.source_client`. A partial result is indistinguishable from a whole
 one by its contents, so a short read has to fail rather than return a prefix a
 caller would treat as complete. This costs latency — a 50,000-row read is a couple
 of seconds rather than a couple of hundred milliseconds — and it is what lets a

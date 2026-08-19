@@ -229,9 +229,24 @@ class HotdataSourceClient(ManagedDatabaseClient):
                 response.query_run_id, database_id=database_id
             )
             if result_id is None:
-                return None
+                # A succeeded run naming no result. Unlike the synchronous branch
+                # there are no columns here to tell "nothing to return" from "a
+                # result that could not be persisted", so nothing establishes the
+                # rowless case and the silent outcome has no basis.
+                raise UnverifiableReadError(
+                    "the query run succeeded but named no result, so whether it "
+                    "produced rows cannot be established"
+                )
             return self._await_result(result_id, database_id=database_id)
-        return None
+        # Neither response model. Reading this as "no rows" would let an SDK
+        # change turn every read into a silent empty one — and under
+        # `write_disposition="replace"` an empty read TRUNCATES the destination
+        # and reports success. The pinned SDK cannot reach here; a version bump
+        # is exactly what would, and it would do so with no test failing.
+        raise UnverifiableReadError(
+            f"the query returned an unrecognised response ({type(response).__name__}), "
+            "so whether it produced rows cannot be established"
+        )
 
     def _await_result(self, result_id: str, *, database_id: str) -> tuple[str, int]:
         """Wait for a result to be ready, and take its row count off the way out.
@@ -302,6 +317,21 @@ def _materialized(field_type: pa.DataType) -> pa.DataType:
     # so a list whose child is named or non-nullable would come back altered even
     # when it held no view at all -- a normaliser that changes schemas it was not
     # asked to touch.
+    # Checked before the plain list arms: both have their own Arrow type ids, so
+    # `is_list` is False for them and they would otherwise fall straight through
+    # unconverted — the same gap struct and dictionary were each added to close.
+    # Rebuilding a map as a plain list would change its type, not just its
+    # layout, so it needs its own arm rather than sharing one.
+    if pat.is_fixed_size_list(field_type):
+        return pa.list_(
+            _materialized_field(field_type.value_field), field_type.list_size
+        )
+    if pat.is_map(field_type):
+        return pa.map_(
+            _materialized_field(field_type.key_field),
+            _materialized_field(field_type.item_field),
+            keys_sorted=field_type.keys_sorted,
+        )
     if pat.is_list_view(field_type):
         return pa.list_(_materialized_field(field_type.value_field))
     if pat.is_large_list_view(field_type):
@@ -355,6 +385,10 @@ def _has_list_view(field_type: pa.DataType) -> bool:
         return any(_has_list_view(f.type) for f in field_type)
     if pat.is_dictionary(field_type):
         return _has_list_view(field_type.value_type)
+    if pat.is_fixed_size_list(field_type):
+        return _has_list_view(field_type.value_type)
+    if pat.is_map(field_type):
+        return _has_list_view(field_type.key_type) or _has_list_view(field_type.item_type)
     return False
 
 
@@ -379,8 +413,15 @@ def _materialize_views(data: T) -> T:
         return data
     if not any(_has_list_view(f.type) for f in data.schema):
         return data.cast(schema)
+    # Only the list-view columns take the Python rebuild; everything else casts.
+    # A normaliser must not reshape a column it was not asked to touch, and the
+    # rebuild is the slow path — applying it to a whole table because one column
+    # needs it spends that cost on every other column for nothing.
     columns = [
-        _rebuilt(data.column(i), schema.field(i).type) for i in range(data.num_columns)
+        _rebuilt(data.column(i), schema.field(i).type)
+        if _has_list_view(data.schema.field(i).type)
+        else data.column(i).cast(schema.field(i).type)
+        for i in range(data.num_columns)
     ]
     if isinstance(data, pa.RecordBatch):
         return pa.RecordBatch.from_arrays(columns, schema=schema)
@@ -440,7 +481,16 @@ def _total_from_headers(headers: object, *, result_id: str) -> int:
             "read should have produced is unknown",
             result_id=result_id,
         )
-    return int(total)
+    try:
+        return int(total)
+    except (TypeError, ValueError) as exc:
+        # Same outcome as an absent header, and deliberately the same error: a
+        # caller catching this module's two errors to tell "could not verify"
+        # from a real fault would otherwise miss a bare ValueError from int().
+        raise UnverifiableReadError(
+            f"X-Total-Row-Count was {total!r}, which is not a row count",
+            result_id=result_id,
+        ) from exc
 
 
 def _require_complete(*, result_id: str, expected: int, received: int) -> None:

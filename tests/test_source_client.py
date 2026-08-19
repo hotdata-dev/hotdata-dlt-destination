@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import pyarrow as pa
 import pytest
+from hotdata.models.async_query_response import AsyncQueryResponse
 from hotdata.models.query_response import QueryResponse
 
 import hotdata_dlt_destination.source_client as source_client
@@ -707,3 +708,145 @@ def test_a_schema_with_nothing_to_change_is_returned_untouched() -> None:
         ]
     )
     assert _materialized_schema(plain).equals(plain)
+
+
+# --- the asynchronous submit path --------------------------------------------
+#
+# `_FakeQueryApi.response` is a QueryResponse everywhere above, so none of it
+# reaches AsyncQueryResponse or `_await_run_result_id` -- and that is the path a
+# long-running read comes back on.
+
+
+class _FakeQueryRunsApi:
+    result_id: ClassVar[str | None] = "rslt_async"
+    statuses: ClassVar[list[str]] = ["succeeded"]
+
+    def __init__(self, api: object) -> None:
+        pass
+
+    def get_query_run(self, query_run_id: str, x_database_id: str | None = None) -> object:
+        status = (
+            type(self).statuses.pop(0)
+            if len(type(self).statuses) > 1
+            else type(self).statuses[0]
+        )
+        return SimpleNamespace(
+            status=status, error_message=None, result_id=type(self).result_id
+        )
+
+
+@pytest.fixture
+def async_submit(monkeypatch: pytest.MonkeyPatch) -> Callable[..., HotdataSourceClient]:
+    def build(*, run_result_id: str | None, total: int = 5) -> HotdataSourceClient:
+        _FakeQueryApi.response = AsyncQueryResponse.model_construct(
+            query_run_id="qr_async", status="running", status_url="/v1/query-runs/qr_async"
+        )
+        _FakeQueryRunsApi.result_id = run_result_id
+        _FakeQueryRunsApi.statuses = ["running", "succeeded"]
+        _FakeResultsApi.statuses = ["ready"]
+        _FakeResultsApi.total = total
+        _FakeResultsApi.limits_seen = []
+        monkeypatch.setattr(source_client, "QueryApi", _FakeQueryApi)
+        monkeypatch.setattr(source_client, "QueryRunsApi", _FakeQueryRunsApi)
+        monkeypatch.setattr(source_client, "ResultsApi", _FakeResultsApi)
+        client = HotdataSourceClient.__new__(HotdataSourceClient)
+        client._max_retries = 1
+        client._retry_backoff_seconds = 0.0
+        client._runtime = SimpleNamespace(api=None)
+        return client
+
+    return build
+
+
+def test_an_async_run_is_awaited_then_its_result_read(
+    async_submit: Callable[..., HotdataSourceClient],
+) -> None:
+    client = async_submit(run_result_id="rslt_async", total=1234)
+    assert client._submit("SELECT 1", database_id=DB) == ("rslt_async", 1234)
+
+
+def test_a_succeeded_async_run_naming_no_result_raises(
+    async_submit: Callable[..., HotdataSourceClient],
+) -> None:
+    """Not knowably rowless, so not silently empty.
+
+    The synchronous branch can tell "nothing to return" from "could not be
+    persisted" by looking at the columns. Here there are none, so returning None
+    would assert something nothing established -- and under
+    write_disposition="replace" an empty read truncates the destination table and
+    reports success.
+    """
+    client = async_submit(run_result_id=None)
+    with pytest.raises(UnverifiableReadError, match="named no result"):
+        client._submit("SELECT 1", database_id=DB)
+
+
+def test_an_unrecognised_response_type_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The branch an SDK bump lands in.
+
+    `pyproject.toml` caps the SDK partly because of query-path model churn. If
+    `query()` ever returns a third model, falling through to "no rows" would make
+    every read silently empty, with no test failing to say so.
+    """
+    _FakeQueryApi.response = SimpleNamespace(something="else")
+    monkeypatch.setattr(source_client, "QueryApi", _FakeQueryApi)
+    client = HotdataSourceClient.__new__(HotdataSourceClient)
+    client._max_retries = 1
+    client._retry_backoff_seconds = 0.0
+    client._runtime = SimpleNamespace(api=None)
+    with pytest.raises(UnverifiableReadError, match="unrecognised response"):
+        client._submit("SELECT 1", database_id=DB)
+
+
+def test_a_map_or_fixed_size_list_view_is_materialized() -> None:
+    """Both have their own Arrow type ids, so `is_list` is False for them.
+
+    Without their own arms they fell straight through unconverted and reached dlt
+    with a view still inside -- the same gap struct and dictionary were each
+    added to close.
+    """
+    mapped = pa.map_(
+        pa.field("key", pa.string_view(), nullable=False), pa.field("value", pa.int64())
+    )
+    out = _materialized(mapped)
+    assert pa.types.is_map(out)  # not rebuilt into a plain list
+    assert out.key_field.type == pa.string()
+    assert out.key_field.nullable is False
+
+    fsl = pa.list_(pa.field("elem", pa.string_view()), 3)
+    out2 = _materialized(fsl)
+    assert pa.types.is_fixed_size_list(out2)
+    assert out2.list_size == 3
+    assert out2.value_field.type == pa.string()
+
+
+def test_only_the_list_view_columns_take_the_python_rebuild() -> None:
+    """A normaliser must not reshape a column it was not asked to touch.
+
+    The rebuild is also the slow path, so applying it table-wide because one
+    column needs it spends that on every other column for nothing.
+    """
+    viewed = pa.table(
+        {
+            "xs": pa.array([[1, 2]], type=pa.list_view(pa.int64())),
+            "ts": pa.array([1_234_567_891_123_456_789], type=pa.timestamp("ns")),
+        }
+    )
+    out = FakeSourceClient(table=viewed, total=1).read_arrow("SELECT * FROM t", database_id=DB)
+    out.validate(full=True)
+    assert out.schema.field("xs").type == pa.list_(pa.int64())
+    # The untouched column keeps its exact type and value.
+    assert out.schema.field("ts").type == pa.timestamp("ns")
+    assert out.column("ts")[0].value == 1_234_567_891_123_456_789
+
+
+def test_a_non_numeric_total_header_is_an_unverifiable_read() -> None:
+    """Still a refusal, but one a caller can recognise.
+
+    A bare ValueError from int() escapes the two errors this module documents, so
+    a caller distinguishing "could not verify" from a real fault would miss it.
+    """
+    with pytest.raises(UnverifiableReadError, match="not a row count"):
+        _total_from_headers({"X-Total-Row-Count": "1,024"}, result_id="rslt_1")
