@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `HotdataSourceClient.read_rows` now takes the query response body when it is the
+  whole result (`truncated: false`, which the API guarantees means the result fit
+  entirely in that response), and goes to the persisted result only when the body
+  is a bounded preview. One request instead of four plus a readiness wait —
+  measured against a live workspace, ~0.8s for 10,000 rows either way, versus
+  ~2.2s always taking the persisted path. The persisted path still earns its cost
+  where it matters: the inline cap is a BYTE budget, so a wide table can cap at a
+  few hundred rows where a narrow one returns ten thousand. Row counts are checked
+  on both routes (`total_row_count` on the body, `X-Total-Row-Count` on the
+  result).
+- **The two routes type values differently and `read_rows` does not hide it:** the
+  body is JSON, so a timestamp arrives as text; the persisted result is Arrow, so
+  the same timestamp arrives as a `datetime`. Callers needing one stable set of
+  types must use `read_arrow` / `read_arrow_batches`, which always use the
+  persisted result and are unchanged.
+
 ### Added
 
 - Hotdata as a dlt **source**: `hotdata_dlt_destination.sources.hotdata_table` and

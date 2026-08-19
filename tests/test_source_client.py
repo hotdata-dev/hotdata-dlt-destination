@@ -89,6 +89,8 @@ class FakeSourceClient(HotdataSourceClient):
         result_id: str | None = "rslt_1",
         header_name: str = "X-Total-Row-Count",
         unpersisted_rows: int = 0,
+        truncated: bool = False,
+        body_total: int | None = None,
     ) -> None:
         # Deliberately no super().__init__(): that would build a real API client.
         # _runtime still has to exist -- the real streaming path reads
@@ -101,10 +103,35 @@ class FakeSourceClient(HotdataSourceClient):
         self._result_id = result_id
         self._header_name = header_name
         self._unpersisted_rows = unpersisted_rows
+        # `truncated` drives which route read_rows takes: False = the body is the
+        # whole result and is used directly; True = the body is a prefix, so the
+        # persisted result is fetched instead.
+        self._truncated = truncated
+        self._body_total = body_total
         self.submitted: list[str] = []
         self.closed = False
 
     # --- faked SDK surface -------------------------------------------------
+
+    def _query(self, sql: str, *, database_id: str) -> object:
+        """A synchronous response whose body carries the fake's table."""
+        assert database_id == DB
+        self.submitted.append(sql)
+        rows = self._table.to_pylist()
+        total = len(rows) if self._body_total is None else self._body_total
+        return QueryResponse.model_construct(
+            result_id=self._result_id,
+            columns=list(self._table.column_names),
+            rows=[] if self._truncated else rows,
+            nullable=[],
+            preview_row_count=0 if self._truncated else len(rows),
+            row_count=0 if self._truncated else len(rows),
+            total_row_count=total,
+            truncated=self._truncated,
+            query_run_id="qr_1",
+            execution_time_ms=1,
+            warning=None,
+        )
 
     def _query_database_scoped(self, sql: str, *, database_id: str) -> str | None:
         # Retained for tests that drive the shared client's own path.
@@ -112,9 +139,10 @@ class FakeSourceClient(HotdataSourceClient):
         self.submitted.append(sql)
         return self._result_id
 
-    def _submit(self, sql: str, *, database_id: str) -> tuple[str, int] | None:
+    def _resolve(self, response: object, *, database_id: str) -> tuple[str, int] | None:
+        """Stands in for the readiness wait. Faked at this seam rather than at
+        `_submit`, so `read_rows`' choice of route is the real one."""
         assert database_id == DB
-        self.submitted.append(sql)
         if self._result_id is None:
             if self._unpersisted_rows > 0:
                 raise UnverifiableReadError(
@@ -124,10 +152,13 @@ class FakeSourceClient(HotdataSourceClient):
             return None
         # Mirrors the real method: the readiness wait is where the total comes
         # from, so a missing header surfaces here too.
-        response = _FakeStatusResponse({self._header_name: str(self._total)})
+        status = _FakeStatusResponse({self._header_name: str(self._total)})
         return self._result_id, _total_from_headers(
-            response.headers, result_id=self._result_id
+            status.headers, result_id=self._result_id
         )
+
+    def _submit(self, sql: str, *, database_id: str) -> tuple[str, int] | None:
+        return self._resolve(self._query(sql, database_id=database_id), database_id=database_id)
 
     def _fetch_result_arrow(self, result_id: str, *, database_id: str) -> pa.Table:
         return self._table
@@ -182,10 +213,54 @@ def test_read_arrow_returns_every_row() -> None:
     assert client.submitted == ["SELECT * FROM public.t"]
 
 
-def test_read_rows_returns_dicts() -> None:
-    rows = FakeSourceClient().read_rows("SELECT * FROM public.t", database_id=DB)
+def test_read_rows_takes_the_response_body_when_it_is_the_whole_result() -> None:
+    """One request, not four.
+
+    `truncated: false` means the body IS the whole result, so completeness is
+    already established and the persisted result would be three extra round trips
+    plus a readiness wait for the same rows.
+    """
+    client = FakeSourceClient(truncated=False)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
     assert rows[0] == {"id": 1, "name": "a"}
     assert len(rows) == 5
+    assert len(client.submitted) == 1
+
+
+def test_read_rows_falls_back_to_the_persisted_result_when_the_body_is_capped() -> None:
+    """A capped body is a prefix, so the rows have to come from the stored result.
+
+    This is the case the persisted path earns its cost in: an inline answer is
+    capped by a byte budget, so a wide table can cap at a few hundred rows.
+    """
+    client = FakeSourceClient(truncated=True)
+    rows = client.read_rows("SELECT * FROM public.t", database_id=DB)
+    assert len(rows) == 5
+    assert rows[0]["id"] == 1
+
+
+def test_read_rows_refuses_a_body_that_disagrees_with_its_own_count() -> None:
+    """Same contract as the persisted path, applied to the fast one.
+
+    An uncapped response is supposed to carry the whole result; a body whose row
+    count contradicts `total_row_count` is not something to hand on as complete.
+    """
+    client = FakeSourceClient(truncated=False, body_total=9)
+    with pytest.raises(IncompleteReadError):
+        client.read_rows("SELECT * FROM public.t", database_id=DB)
+
+
+def test_the_arrow_methods_always_use_the_persisted_result() -> None:
+    """The strict contract, unchanged.
+
+    read_rows may vary its route; the Arrow methods must not, because their whole
+    point is engine types that do not depend on how large the answer happened to
+    be.
+    """
+    client = FakeSourceClient(truncated=False)
+    table = client.read_arrow("SELECT * FROM public.t", database_id=DB)
+    assert table.num_rows == 5
+    assert table is client._table
 
 
 def test_a_statement_with_no_persisted_result_is_empty_not_an_error() -> None:
