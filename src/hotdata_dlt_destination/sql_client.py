@@ -141,7 +141,7 @@ class HotdataCursor(DBApiCursorImpl):
 
 
 class HotdataSqlClient(SqlClientBase[HotdataClient]):
-    """Adapter exposing the Hotdata managed database through dlt's SQL client.
+    """Adapter exposing the Hotdata instant database through dlt's SQL client.
 
     A dlt "dataset" maps to the Hotdata **schema**; the managed **database** is a
     separate scoping dimension passed out-of-band on each query (not in the SQL).

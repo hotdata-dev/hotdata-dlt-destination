@@ -6,14 +6,14 @@
 [![dlt](https://img.shields.io/badge/dlt-1.28-blue.svg)](https://dlthub.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Load data into [Hotdata](https://hotdata.dev) managed databases using [dlt](https://dlthub.com) — then read it back through dlt's standard dataset interface.
+Load data into [Hotdata](https://hotdata.dev) instant databases using [dlt](https://dlthub.com) — then read it back through dlt's standard dataset interface.
 
-dlt handles extraction, schema inference, and batching. This package is a **native dlt destination** (`JobClientBase` + `WithStateSync` + `WithSqlClient`) for the Hotdata side: it uploads each batch as Parquet, registers it with your managed database, syncs pipeline state so incremental sources resume, and exposes a server-side read API.
+dlt handles extraction, schema inference, and batching. This package is a **native dlt destination** (`JobClientBase` + `WithStateSync` + `WithSqlClient`) for the Hotdata side: it uploads each batch as Parquet, registers it with your instant database, syncs pipeline state so incremental sources resume, and exposes a server-side read API.
 
 **Highlights**
 
 - **Native destination** — nested/child tables, dlt internal columns (`_dlt_id`, `_dlt_load_id`), schema versioning, and load tracking, all preserved.
-- **Incremental resume** — pipeline state is persisted in the managed database, so incremental sources pick up where they left off across runs.
+- **Incremental resume** — pipeline state is persisted in the instant database, so incremental sources pick up where they left off across runs.
 - **Read your data back** — query loaded tables through `pipeline.dataset()` (pandas / Arrow / fluent SQL / ibis), server-side on Apache DataFusion. No Hotdata-specific code.
 - **Hotdata as a source** — `hotdata_table()` / `hotdata_query()` turn a managed table or a SQL query into dlt resources, so you can load *out* of Hotdata into any dlt destination.
 - **In-place schema evolution** — new tables and columns are added to an existing database without recreating it or moving data.
@@ -87,20 +87,20 @@ export HOTDATA_API_KEY=your_api_key
 
 The API key is a secret, so it's read from the environment (or a dlt secrets provider). The workspace ID is routing, not a secret — pass it as the `workspace_id=` parameter (switching workspaces is a one-line change).
 
-That's it. On first run, a managed database labelled `sales` is created automatically, the `orders` table is loaded, and the new database **id** is printed:
+That's it. On first run, an instant database labelled `sales` is created automatically, the `orders` table is loaded, and the new database **id** is printed:
 
 ```
-hotdata: created managed database db_abc123 (name='sales'). Pin it for future runs by
+hotdata: created instant database db_abc123 (name='sales'). Pin it for future runs by
 setting database_id=db_abc123 (HOTDATA_DATABASE_ID / [destination.hotdata] database_id).
 ```
 
-Managed databases are addressed by id — Hotdata database names are not unique, so a name can't identify one. To keep loading into the **same** database on later runs, pass that id (via `hotdata(database_id="db_abc123")`, `HOTDATA_DATABASE_ID`, or `[destination.hotdata] database_id` in `.dlt/config.toml`). Without a pinned id, each run creates a new database.
+Instant databases are addressed by id — Hotdata database names are not unique, so a name can't identify one. To keep loading into the **same** database on later runs, pass that id (via `hotdata(database_id="db_abc123")`, `HOTDATA_DATABASE_ID`, or `[destination.hotdata] database_id` in `.dlt/config.toml`). Without a pinned id, each run creates a new database.
 
-`hotdata` supports nested/child tables, preserves dlt's internal columns (`_dlt_id`, `_dlt_load_id`), and persists schema-version, load, and pipeline-state tables in the managed database so **incremental sources resume correctly across runs**. If an existing managed database is missing a declared table on a later run, the table is added to it in place; existing tables and their data are left untouched.
+`hotdata` supports nested/child tables, preserves dlt's internal columns (`_dlt_id`, `_dlt_load_id`), and persists schema-version, load, and pipeline-state tables in the instant database so **incremental sources resume correctly across runs**. If an existing instant database is missing a declared table on a later run, the table is added to it in place; existing tables and their data are left untouched.
 
 ## Read your data back
 
-Reads address the managed database by **id** (names aren't identifiers), so point the reading pipeline at the `database_id` you pinned after the first load (see [Quickstart](#quickstart)). Then dlt's standard [dataset interface](https://dlthub.com/docs/general-usage/dataset-access/dataset) reads it back — no Hotdata-specific code, no hand-written SQL:
+Reads address the instant database by **id** (names aren't identifiers), so point the reading pipeline at the `database_id` you pinned after the first load (see [Quickstart](#quickstart)). Then dlt's standard [dataset interface](https://dlthub.com/docs/general-usage/dataset-access/dataset) reads it back — no Hotdata-specific code, no hand-written SQL:
 
 ```python
 pipeline = dlt.pipeline(
@@ -175,7 +175,7 @@ layout is never copied to the destination: use
 [`hotdata_adapter`](#storage-layout-partition-and-sort-keys) to declare the target's
 partition and sort keys, because those describe how the new table will be queried.
 
-`database_id` is per resource, so a pipeline can read one managed database and
+`database_id` is per resource, so a pipeline can read one instant database and
 write another. Credentials and ids resolve from `[sources.hotdata]` when not
 passed explicitly — the same nesting the destination uses, so both halves of a
 Hotdata-to-Hotdata pipeline are configured the same way:
@@ -233,7 +233,7 @@ Where `hotdata` stands against the [dlt destination capability spec](https://dlt
 | `replace`   | ✅ | Native `replace` — table contents fully replaced |
 | `merge`     | ✅ | Native `upsert` by `primary_key` (updates matches, inserts the rest). Without a `primary_key` it falls back to a client-side combine — see merge strategies below |
 
-> **Keys are fixed at table creation.** A table's key is declared the first time it's created in the managed database. Changing a resource's `primary_key` on a later run does **not** update the server-side key. A table that already exists *without* a key (e.g. created before this feature) can't gain one in place — the connector detects the missing key and falls back to a client-side combine for merges, so loads don't break.
+> **Keys are fixed at table creation.** A table's key is declared the first time it's created in the instant database. Changing a resource's `primary_key` on a later run does **not** update the server-side key. A table that already exists *without* a key (e.g. created before this feature) can't gain one in place — the connector detects the missing key and falls back to a client-side combine for merges, so loads don't break.
 
 ### Merge strategies
 
@@ -334,7 +334,7 @@ Notes:
 |---------|:-------:|-------|
 | Nested / child tables | ✅ | Up to `max_table_nesting` (default `1000`), e.g. `orders__items` |
 | dlt internal columns (`_dlt_id`, `_dlt_load_id`) | ✅ | Preserved, never stripped |
-| dlt system tables (`_dlt_loads`, `_dlt_version`) | ✅ | Persisted in the managed database |
+| dlt system tables (`_dlt_loads`, `_dlt_version`) | ✅ | Persisted in the instant database |
 | Pipeline state sync (`WithStateSync`) | ✅ | Incremental sources resume across runs |
 | Source resources (`hotdata_table` / `hotdata_query`) | ✅ | Read a managed table or SQL query into any dlt destination; full reads, Arrow batches — see [Hotdata as a source](#hotdata-as-a-source) |
 | Incremental source (cursor / change feed) | 🔜 | Full reads today; bound the query yourself |
@@ -360,12 +360,12 @@ Notes:
 |-----------|-------------|---------|-------------|
 | `api_key` | `HOTDATA_API_KEY` | required | Your Hotdata API key (a secret; passed via `credentials=` or the env var) |
 | `workspace_id` | — | required | Your Hotdata workspace ID — pass as the `hotdata(workspace_id=...)` param (no env var) |
-| `database_id` | `HOTDATA_DATABASE_ID` | — | Id of an existing managed database to load into. This is how a database is targeted — names are not unique, so the **id** is the identifier. Printed on first-run create; pin it to reuse the database on later runs |
-| `database_name` | `HOTDATA_DATABASE` | `dlt` | Display label used **only when creating** a new managed database (never to look one up) |
-| `schema` | `HOTDATA_SCHEMA` | `public` | Schema within the managed database |
+| `database_id` | `HOTDATA_DATABASE_ID` | — | Id of an existing instant database to load into. This is how a database is targeted — names are not unique, so the **id** is the identifier. Printed on first-run create; pin it to reuse the database on later runs |
+| `database_name` | `HOTDATA_DATABASE` | `dlt` | Display label used **only when creating** a new instant database (never to look one up) |
+| `schema` | `HOTDATA_SCHEMA` | `public` | Schema within the instant database |
 | `write_disposition` | `HOTDATA_WRITE_DISPOSITION` | `append` | Default write mode (see [Write modes](#write-modes)) |
 | `declared_tables` | `HOTDATA_DECLARED_TABLES` | — | All table names the pipeline will write (required for multi-table pipelines — see [Multiple tables](#multiple-tables)) |
-| `create_database_if_missing` | `HOTDATA_CREATE_DATABASE_IF_MISSING` | `True` | Create the managed database if it doesn't exist yet |
+| `create_database_if_missing` | `HOTDATA_CREATE_DATABASE_IF_MISSING` | `True` | Create the instant database if it doesn't exist yet |
 | `api_base_url` | `HOTDATA_API_BASE_URL` | `https://api.hotdata.dev` | Hotdata API endpoint |
 | `max_retries` | `HOTDATA_MAX_RETRIES` | `8` | How many times to retry a failed request |
 | `retry_backoff_seconds` | `HOTDATA_RETRY_BACKOFF_SECONDS` | `1.5` | Initial wait between retries (grows linearly with each attempt) |
@@ -373,7 +373,7 @@ Notes:
 Pass these as keyword arguments to `hotdata(...)`. The `api_key` is the exception — being a secret, it's read from `HOTDATA_API_KEY` (or supplied via `credentials=`, e.g. `hotdata(credentials={"api_key": "..."}, ...)`); `workspace_id` has no environment variable. `hotdata` also accepts:
 
 - `max_table_nesting` (default `1000`) — maximum nested/child-table depth.
-- `loader_parallelism_strategy` (default `sequential`) — managed-database loads lock at the catalog level, so different tables in the same database can't load concurrently. Override only if you know your loads won't contend for the same database.
+- `loader_parallelism_strategy` (default `sequential`) — instant-database loads lock at the catalog level, so different tables in the same database can't load concurrently. Override only if you know your loads won't contend for the same database.
 
 ## Write modes
 
@@ -403,7 +403,7 @@ def customers_resource():
 
 ## Multiple tables
 
-When a pipeline writes to more than one table, pass all table names to `declared_tables`. Hotdata needs to know the full list upfront to set up the managed database correctly.
+When a pipeline writes to more than one table, pass all table names to `declared_tables`. Hotdata needs to know the full list upfront to set up the instant database correctly.
 
 ```python
 pipeline = dlt.pipeline(
@@ -424,7 +424,7 @@ If you add a new table later, include it in `declared_tables` on the next run �
 After a pipeline runs, use the [Hotdata CLI](https://github.com/hotdata-dev/sdk-python) to check that the data landed:
 
 ```bash
-# List your managed databases (shows each database's id)
+# List your instant databases (shows each database's id)
 hotdata databases list
 
 # Address by id (the one printed on first-run create) — names aren't unique
@@ -474,7 +474,7 @@ Each pipeline run:
 
 `replace` and `append` apply the uploaded batch directly. `merge` maps to a native `upsert` — the server matches rows by the table's declared key (from your resource's `primary_key`, declared on the table at setup) and updates the matches while inserting the rest — with no full-table read. Only `insert-only`, and a `merge` on a table without a resolvable `primary_key`, still read the current contents, combine in Python (falling back to dlt's `_dlt_id`), and replace. This is all transparent — your resource just yields rows.
 
-The destination preserves dlt's native `_dlt_id` / `_dlt_load_id` columns and persists dlt's schema-version, load, and pipeline-state tables in the managed database so incremental sources can restore their state on the next run. No extra columns are added.
+The destination preserves dlt's native `_dlt_id` / `_dlt_load_id` columns and persists dlt's schema-version, load, and pipeline-state tables in the instant database so incremental sources can restore their state on the next run. No extra columns are added.
 
 See [docs/architecture.md](docs/architecture.md) and the [runbook](docs/runbook.md) for the internals.
 

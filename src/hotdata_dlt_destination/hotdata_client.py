@@ -32,7 +32,7 @@ def _is_not_found(exc: Exception) -> bool:
 
 
 class HotdataClient(ManagedDatabaseClient):
-    """Managed-database client used by the dlt destination.
+    """Instant-database client used by the dlt destination.
 
     Addressing is **id-first**: a Hotdata database is identified by its id, never
     by name. The name (``description``) is only a display label supplied when a
@@ -128,10 +128,10 @@ class HotdataClient(ManagedDatabaseClient):
             db = self._bind_by_id(database_id)
             self._cache_db(db, created=False)
             return db
-        raise KeyError("no managed database resolved for this run (set database_id)")
+        raise KeyError("no instant database resolved for this run (set database_id)")
 
     def resolved_database_id(self) -> str:
-        """Return the id of the run's managed database (bound by id or created).
+        """Return the id of the run's instant database (bound by id or created).
 
         Raises ``KeyError`` when none is configured and none was created this run.
         """
@@ -178,7 +178,7 @@ class HotdataClient(ManagedDatabaseClient):
                     if create_if_missing:
                         raise HotdataTerminalError(
                             f"configured database_id {database_id!r} was not found "
-                            "(it may have been dropped). A managed database cannot be "
+                            "(it may have been dropped). An instant database cannot be "
                             "recreated with the same id -- unset database_id to create a "
                             "new one, or pin an existing id."
                         ) from None
@@ -198,7 +198,7 @@ class HotdataClient(ManagedDatabaseClient):
                 created = True
                 self._cache_db(db, created=True)
             else:
-                raise KeyError("no managed database resolved for this run (set database_id)")
+                raise KeyError("no instant database resolved for this run (set database_id)")
 
         # A freshly created database already declared every table; only an
         # existing (bound) database needs additive, in-place schema evolution.
@@ -232,7 +232,7 @@ class HotdataClient(ManagedDatabaseClient):
         # Logged at WARNING (dlt's default level) so the new id is always visible:
         # without pinning it via database_id, the next run creates another database.
         logger.warning(
-            "hotdata: created managed database %s (name=%r). Pin it for future runs by "
+            "hotdata: created instant database %s (name=%r). Pin it for future runs by "
             "setting database_id=%s (HOTDATA_DATABASE_ID / [destination.hotdata] database_id).",
             db.id,
             description,
@@ -375,7 +375,7 @@ class HotdataClient(ManagedDatabaseClient):
         )
 
     def drop_managed_database(self) -> None:
-        """Delete the run's managed database if it exists (used for dlt dev_mode / refresh)."""
+        """Delete the run's instant database if it exists (used for dlt dev_mode / refresh)."""
         db = self._cached_db()
         if db is None:
             database_id = self._configured_database_id()

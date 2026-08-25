@@ -23,7 +23,7 @@ if t.TYPE_CHECKING:
 
 
 class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
-    """dlt destination for Hotdata managed databases.
+    """dlt destination for Hotdata instant databases.
 
     Supports nested/child tables, dlt internal columns, schema versioning,
     load tracking, and pipeline state sync (``WithStateSync``).

@@ -25,7 +25,7 @@ def ibis_connect(client: JobClientBase) -> Any:
     """Open a live ``ibis.hotdata`` connection for a Hotdata destination client.
 
     Maps the destination config onto the backend's ``connect`` parameters and
-    binds the managed database by id (managed databases are addressed by id only).
+    binds the instant database by id (instant databases are addressed by id only).
     """
     import ibis
 

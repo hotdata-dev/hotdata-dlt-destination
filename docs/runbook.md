@@ -39,9 +39,9 @@
   ```
 
   Requires `HOTDATA_API_KEY` to be set; pass your workspace id as the argument. On
-  the first run the demo creates a managed database and prints its id; pass that id
+  the first run the demo creates an instant database and prints its id; pass that id
   on later runs (`--database-id <id>`) to load into the same database instead of
-  creating a new one. Managed databases are addressed by id, not by name.
+  creating a new one. Instant databases are addressed by id, not by name.
 
 - Merge demo:
 
@@ -59,7 +59,7 @@
   uv run hotdata-dlt-ibis-demo --workspace-id <workspace_id>
   ```
 
-  Demonstrates `pipeline.dataset().ibis()` against the loaded managed database.
+  Demonstrates `pipeline.dataset().ibis()` against the loaded instant database.
 
 ## Add a new pipeline
 
@@ -101,4 +101,4 @@
   target rows, combine client-side, and replace the table. Prefer keyed merge
   where possible.
 - Dataset readback fails: pass the pinned `database_id` to `hotdata(...)`.
-  Database names are labels and cannot identify a managed database.
+  Database names are labels and cannot identify an instant database.

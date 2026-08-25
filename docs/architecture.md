@@ -2,7 +2,7 @@
 
 ## Goal
 
-Provide a native `dlt` destination for Hotdata managed databases with explicit
+Provide a native `dlt` destination for Hotdata instant databases with explicit
 contracts, predictable retries, full schema/state bookkeeping, nested-table
 support, and dlt dataset readback.
 
@@ -39,7 +39,7 @@ contracts via `JobClientBase`, `WithStateSync`, and `WithSqlClient`:
 1. `dlt` writes a parquet load file and hands its path plus the `table` schema to `HotdataLoadJob`.
 2. Contract mapping converts table metadata into `{database}.{schema}.{table}` naming.
 3. Write disposition comes from the dlt table schema, falling back to the destination default.
-4. Managed database is resolved or created (`ensure_managed_database`, which declares any missing tables in place).
+4. Instant database is resolved or created (`ensure_managed_database`, which declares any missing tables in place).
 5. Load path uses Hotdata managed-table operations:
    - `replace`: empty the target once per load package with a zero-row replace, then append each parquet batch
    - `append`: upload the parquet batch and append it directly

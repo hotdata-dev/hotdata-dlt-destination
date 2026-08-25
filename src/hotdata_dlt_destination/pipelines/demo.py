@@ -2,7 +2,7 @@
 Macro indicators demo pipeline.
 
 Downloads FRED economic indicator data directly from fred.stlouisfed.org
-and loads it into a Hotdata managed database.
+and loads it into a Hotdata instant database.
 
 Resources loaded:
   - macro_indicators_raw  (date, series, value -- long/tidy format, raw frequency)
@@ -93,7 +93,7 @@ def main() -> None:
     parser.add_argument(
         "--database-id",
         default=None,
-        help="Existing managed database id to load into (printed on first-run create; "
+        help="Existing instant database id to load into (printed on first-run create; "
         "omit to create a new database by name)",
     )
     args = parser.parse_args()

@@ -1,6 +1,6 @@
 """Live ibis backend demo for the Hotdata dlt destination.
 
-Loads a small self-contained dataset into a Hotdata managed database, then reads
+Loads a small self-contained dataset into a Hotdata instant database, then reads
 it back with ``pipeline.dataset().ibis()`` -- the live ``ibis.hotdata`` backend --
 and runs ibis expressions and raw SQL against the remote engine.
 
@@ -87,12 +87,12 @@ def main() -> None:
     parser.add_argument(
         "--database-id",
         default=None,
-        help="Existing managed database id (omit to create a new one by name)",
+        help="Existing instant database id (omit to create a new one by name)",
     )
     args = parser.parse_args()
     api_base_url = os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev")
 
-    # id-first: the live ibis read binds the managed database by id (names are not
+    # id-first: the live ibis read binds the instant database by id (names are not
     # identifiers). Provision it once and pin the id; pass --database-id to reuse.
     database_id = args.database_id
     if database_id is None:
@@ -105,7 +105,7 @@ def main() -> None:
             description=DATABASE_NAME, schema=SCHEMA, tables=["trips"]
         ).id
         rc.close()
-        print(f"created managed database {database_id} (pass --database-id {database_id} to reuse)")
+        print(f"created instant database {database_id} (pass --database-id {database_id} to reuse)")
 
     pipeline = dlt.pipeline(
         pipeline_name="ibis_demo",
