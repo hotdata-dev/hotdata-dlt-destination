@@ -109,7 +109,7 @@ class UnverifiableReadError(RuntimeError):
 
 
 class HotdataSourceClient(ManagedDatabaseClient):
-    """Runs read-only SQL against a managed database and returns every row.
+    """Runs read-only SQL against an instant database and returns every row.
 
     Unlike the destination's client this holds no database of its own: the
     database id is an argument to each read, because a pipeline commonly reads

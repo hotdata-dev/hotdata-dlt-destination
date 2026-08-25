@@ -1,5 +1,5 @@
 """End-to-end tests: real dlt pipelines through the real `hotdata` destination,
-`HotdataJobClient`, and `HotdataClient`, backed by an in-memory managed-database
+`HotdataJobClient`, and `HotdataClient`, backed by an in-memory instant-database
 simulator (only the network transport is faked, so no credentials are needed).
 
 These exercise the integration paths unit tests can't: state-sync round-trip,
@@ -283,7 +283,7 @@ def backend(monkeypatch):
 
 
 def _dest(database_name, declared_tables, write_disposition="append"):
-    # id-first: a managed database is addressed by id. Model the real workflow —
+    # id-first: an instant database is addressed by id. Model the real workflow —
     # the database exists (created once) and the pipeline pins its id — by
     # creating it up front and binding by id. `database_name` stays the label.
     be = _ACTIVE["backend"]
@@ -322,7 +322,7 @@ def test_load_replace_and_bookkeeping(backend, tmp_path):
 
 
 def test_auto_create_when_no_database_id(backend, tmp_path):
-    # First run with no database_id: the pipeline creates the managed database by
+    # First run with no database_id: the pipeline creates the instant database by
     # its name (label) and addresses it by the returned id for the rest of the run.
     @dlt.resource(name="orders", write_disposition="replace")
     def orders():
@@ -586,7 +586,7 @@ def test_ibis_expression_reads(backend, tmp_path):
 
 def test_ibis_live_backend(backend, tmp_path):
     # dataset().ibis() returns a live ibis.hotdata backend, with config mapped
-    # onto the connection and the managed database bound by id. No query runs, so
+    # onto the connection and the instant database bound by id. No query runs, so
     # nothing hits the network.
     pytest.importorskip("ibis")
     pytest.importorskip("ibis_hotdata")

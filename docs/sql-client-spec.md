@@ -244,18 +244,18 @@ A single dlt "location" splits into **two independent mechanisms**:
 2. **Database scoping — goes into the request, not the SQL.** Query scoping is by database **id**
    (`_query_database_scoped(database_id=...)` → `X-Database-Id` header). `HotdataClient.execute_sql`
    resolves the run's database **by id** from the bound config (`database_id`, or the record created
-   this run) — never by name — exactly as `fetch_table` does. Managed databases are addressed by id
+   this run) — never by name — exactly as `fetch_table` does. Instant databases are addressed by id
    only; names are not unique and are not used to look one up.
 
-**Decision — mirror the write path:** address by the run's managed database
+**Decision — mirror the write path:** address by the run's instant database
 **id** + the fixed schema, exactly as writes do. This guarantees reads return
 what writes wrote without changing the write path. The dlt pipeline
-`dataset_name` is not the managed-database addressing key; whether to make it map
+`dataset_name` is not the instant-database addressing key; whether to make it map
 to a Hotdata schema or database later is a product/API decision.
 
 ### Result endpoints are database-scoped: `X-Database-Id`
 
-Hotdata query submit and result-fetch requests are scoped to a managed database.
+Hotdata query submit and result-fetch requests are scoped to an instant database.
 `HotdataClient` resolves the database once and carries that scope through both
 SQL reads and table fetches. The table-fetch path matters beyond dataset reads:
 fallback merge paths and `WithStateSync` also fetch managed-table contents.
@@ -420,7 +420,7 @@ This is the "actually running it" test against a real Hotdata API endpoint:
 
 Tiers, high level: **13a** unit tests use canned `pyarrow.Table` values, **13b**
 offline tests use a DataFusion stand-in, and **13d** live smoke tests exercise
-the actual engine, managed-database catalog, auth, and async query polling.
+the actual engine, instant-database catalog, auth, and async query polling.
 
 ## 14. Running & testing it for real — `roundtrip_demo.py`
 
@@ -433,7 +433,7 @@ export HOTDATA_API_KEY=<api_key>
 uv run python scripts/roundtrip_demo.py --workspace-id <workspace_id>
 ```
 
-The first run creates a managed database and prints its id. Pass that id on later
+The first run creates an instant database and prints its id. Pass that id on later
 runs to reuse the same database:
 
 ```bash
@@ -450,7 +450,7 @@ the write step loaded.
 ```
                  WRITE (exists)                         READ (this spec)
  dlt.run(spans) ──normalize→parquet──▶ Hotdata     pipeline.dataset().table("spans").df()
-                     upload_parquet     managed DB          │
+                     upload_parquet     instant DB          │
                      load_managed_table (DataFusion)        ▼
                                                     Relation.to_sql()
                                                       "SELECT * FROM default.public.spans"
@@ -472,7 +472,7 @@ the write step loaded.
 | **M3** | ibis support | ibis **expressions** (`.to_ibis()` → compile → SQL) run through the sql_client — **works with no extra code** (rides the postgres dialect + `execute_query`). The live ibis **backend** (`dataset().ibis()`) is supported by wrapping dlt's `create_ibis_backend` (see below) |
 | **M4** | Docs + capability matrix + version caps + CI canary | README matrix shows read ✅, transactions ❌; `roundtrip_demo.py` runs green live |
 
-**How the live ibis backend is supported.** dlt's `create_ibis_backend` (`dlt/helpers/ibis.py`) is a closed `issubclass(destination.spec, …)` dispatch with no third-party hook; unknown destinations hit `else: raise NotImplementedError`. Rather than fork dlt, the package wraps that function (`ibis_backend.py`, installed on import): a Hotdata client gets a live `ibis.hotdata` connection — the out-of-tree `hotdata-ibis` backend, which speaks the same REST/Arrow query path as this sql_client — and every other destination is delegated to dlt's original dispatch unchanged. The connection binds the managed database by id. This became possible once `hotdata-ibis` moved to ibis 12 with id-only managed-database addressing; it ships behind the `[ibis]` extra.
+**How the live ibis backend is supported.** dlt's `create_ibis_backend` (`dlt/helpers/ibis.py`) is a closed `issubclass(destination.spec, …)` dispatch with no third-party hook; unknown destinations hit `else: raise NotImplementedError`. Rather than fork dlt, the package wraps that function (`ibis_backend.py`, installed on import): a Hotdata client gets a live `ibis.hotdata` connection — the out-of-tree `hotdata-ibis` backend, which speaks the same REST/Arrow query path as this sql_client — and every other destination is delegated to dlt's original dispatch unchanged. The connection binds the instant database by id. This became possible once `hotdata-ibis` moved to ibis 12 with id-only instant-database addressing; it ships behind the `[ibis]` extra.
 
 ## 17. Open questions
 

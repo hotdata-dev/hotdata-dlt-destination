@@ -39,7 +39,7 @@ class TableContract:
         # composed table name (e.g. ``orders__items`` for a nested table). Do NOT
         # re-prepend ``parent`` -- that double-prefixes child tables.
         #
-        # ``database_name`` and ``schema`` are opaque API addresses (a managed-DB
+        # ``database_name`` and ``schema`` are opaque API addresses (an instant-DB
         # name or a ``dbid...`` id), not SQL identifiers — they must pass through
         # VERBATIM. Every other write-path call (``initialize_storage``,
         # ``update_stored_schema``, ``complete_load``) addresses the API with the

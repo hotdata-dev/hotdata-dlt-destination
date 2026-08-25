@@ -1,9 +1,9 @@
-"""``JobClientBase`` destination for Hotdata managed databases.
+"""``JobClientBase`` destination for Hotdata instant databases.
 
 Implements dlt's complete destination contract: nested/child tables, dlt
 internal columns, schema versioning, load tracking, and pipeline state sync
 (``WithStateSync``) so incremental sources can restore their state from the
-managed database. Backed by the shared ``hotdata_framework`` client.
+instant database. Backed by the shared ``hotdata_framework`` client.
 """
 
 from __future__ import annotations
@@ -366,7 +366,7 @@ class HotdataLoadJob(RunnableLoadJob):
 
 
 class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
-    """dlt job client for the Hotdata managed-database destination."""
+    """dlt job client for the Hotdata instant-database destination."""
 
     def __init__(
         self,
@@ -388,7 +388,7 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
     def sql_client(self) -> HotdataSqlClient:
         # Advertised via WithSqlClient so dlt's dataset read API
         # (`pipeline.dataset()`) can query loaded data. Addressing mirrors the
-        # write path (managed database_name + fixed schema), so reads return
+        # write path (instant database_name + fixed schema), so reads return
         # what writes wrote.
         from hotdata_dlt_destination.sql_client import HotdataSqlClient
 
@@ -521,7 +521,7 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
 
     def drop_storage(self) -> None:
         # dlt calls this on dev_mode / refresh to wipe the destination. Dropping the
-        # whole managed database is the simplest correct reset; initialize_storage
+        # whole instant database is the simplest correct reset; initialize_storage
         # recreates it on the next run.
         try:
             with _hotdata_api(self.config) as api:

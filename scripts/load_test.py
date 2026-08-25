@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Load test for hotdata-dlt-destination.
 
-Creates N managed databases, uploads synthetic Parquet data, loads each table,
+Creates N instant databases, uploads synthetic Parquet data, loads each table,
 then queries back via Arrow IPC and prints per-phase timing stats.
 
 Usage:

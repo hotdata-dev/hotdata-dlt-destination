@@ -21,7 +21,7 @@ from hotdata_dlt_destination.job_client import HotdataJobClient, HotdataLoadJob,
 
 
 def _make_fake_api_cls(store: dict[str, pa.Table]):
-    """A fake managed-database client backed by an in-memory ``store`` dict.
+    """A fake instant-database client backed by an in-memory ``store`` dict.
 
     Each ``_hotdata_api`` context constructs a fresh instance, so state must
     live in the shared ``store`` rather than on the instance.

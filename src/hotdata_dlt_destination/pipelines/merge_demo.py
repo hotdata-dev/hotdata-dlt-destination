@@ -1,7 +1,7 @@
 """
 Composite-key merge + hard_delete demo pipeline.
 
-Loads a small ``orders`` table into a Hotdata managed database in two runs to
+Loads a small ``orders`` table into a Hotdata instant database in two runs to
 show off native merge/upsert by a composite key and dlt's ``hard_delete`` hint:
 
   - load 1 (replace): seeds a brand-new table with no declared key.
@@ -87,12 +87,12 @@ def main() -> None:
     parser.add_argument(
         "--database-id",
         default=None,
-        help="Existing managed database id (omit to create a new one by name)",
+        help="Existing instant database id (omit to create a new one by name)",
     )
     args = parser.parse_args()
     api_base_url = os.environ.get("HOTDATA_API_BASE_URL", "https://api.hotdata.dev")
 
-    # id-first: address the managed database by id (names are not identifiers), so
+    # id-first: address the instant database by id (names are not identifiers), so
     # the before/after reads below can find it. Provision it once and pin the id;
     # pass --database-id to reuse an existing database.
     database_id = args.database_id
@@ -106,7 +106,7 @@ def main() -> None:
             description=DATABASE, schema=SCHEMA, tables=["orders"]
         ).id
         rc.close()
-        print(f"created managed database {database_id} (pass --database-id {database_id} to reuse)")
+        print(f"created instant database {database_id} (pass --database-id {database_id} to reuse)")
 
     pipeline = dlt.pipeline(
         pipeline_name="orders_merge",

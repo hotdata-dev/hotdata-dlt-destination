@@ -78,7 +78,7 @@ def read_without_dlt(workspace_id: str) -> None:
 
     Illustrative only (NOT shipped, NOT how we want users to read). It shows the
     friction ``dataset()`` removes: re-instantiate a Hotdata client with
-    credentials, address the managed database by name, fully-qualify the table as
+    credentials, address the instant database by name, fully-qualify the table as
     ``"default"."public"."spans"`` (the catalog is always ``default``), hand-write
     the SQL, and marshal the QueryResult into a DataFrame yourself.
     """
@@ -106,12 +106,12 @@ def main() -> None:
     parser.add_argument(
         "--database-id",
         default=None,
-        help="Existing managed database id (omit to create a new one by name)",
+        help="Existing instant database id (omit to create a new one by name)",
     )
     args = parser.parse_args()
     workspace_id = args.workspace_id
 
-    # id-first: a managed database is addressed by id (names are not identifiers),
+    # id-first: an instant database is addressed by id (names are not identifiers),
     # so a read-back must know the id. Provision the database once here and pin its
     # id for both the write and the read; pass --database-id to reuse an existing one.
     database_id = args.database_id
@@ -123,7 +123,7 @@ def main() -> None:
             description=DATABASE, schema="public", tables=["spans"]
         ).id
         rc.close()
-        print(f"created managed database {database_id} (pass --database-id {database_id} to reuse)")
+        print(f"created instant database {database_id} (pass --database-id {database_id} to reuse)")
 
     pipeline = dlt.pipeline(
         pipeline_name="roundtrip_demo",

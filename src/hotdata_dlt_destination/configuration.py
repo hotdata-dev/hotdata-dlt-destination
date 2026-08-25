@@ -33,20 +33,20 @@ class HotdataClientConfiguration(DestinationClientConfiguration):
     """Hotdata workspace ID. Pass as a ``hotdata(workspace_id=...)`` param."""
     api_base_url: str = "https://api.hotdata.dev"
     database_id: str | None = None
-    """Id of the managed database to load into. This is how an existing database
+    """Id of the instant database to load into. This is how an existing database
     is targeted — Hotdata database names are not unique, so the id (not the name)
     is the identifier. Printed on first-run create; pin it to reuse the database."""
     database_name: str = "dlt"
-    """Display label for the managed database, used only when creating a new one
+    """Display label for the instant database, used only when creating a new one
     (never to look one up). Pin ``database_id`` to reuse an existing database."""
     schema: str = "public"
-    """Schema within the managed database."""
+    """Schema within the instant database."""
     write_disposition: str = "append"
     """Default write disposition when not set on the resource."""
     declared_tables: list[str] | None = None
     """Explicit list of table names for multi-table pipelines."""
     create_database_if_missing: bool = True
-    """Create the managed database automatically if it does not exist."""
+    """Create the instant database automatically if it does not exist."""
     max_retries: int = 8
     """Retry budget for transient API errors (409/429/5xx). Loads take a
     catalog-level lock per database, so a concurrent writer can hold

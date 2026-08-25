@@ -51,7 +51,7 @@ def _install_get_database(monkeypatch, registry: dict) -> None:
 
 
 class _Runtime:
-    """Fake runtime tracking managed-database lifecycle calls (no name lookups)."""
+    """Fake runtime tracking instant-database lifecycle calls (no name lookups)."""
 
     api = None
 
