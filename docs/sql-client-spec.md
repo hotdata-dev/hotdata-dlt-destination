@@ -341,10 +341,17 @@ import location of `WithSqlClient`. A minor bump can change the base-class contr
 Built/verified against `dlt==1.28.1`.
 
 **Why cap the Hotdata SDKs — `hotdata>=0.9.0,<0.10`,
-`hotdata-framework>=0.12.0,<0.13`.** The read path uses query/result API models,
+`hotdata-framework>=0.13.0,<0.14`.** The read path uses query/result API models,
 managed-table layout metadata, and the framework load helpers that carry native
 append/delete/update/upsert support. These SDKs move quickly, so the destination
 tracks one tested minor at a time.
+
+The framework floor sits at 0.13 because every load on the `append`/`replace`
+path goes out as `mode="append"`, and an earlier framework runs an append at most
+once — leaving the loads this package issues most, dlt's `_dlt_pipeline_state` /
+`_dlt_loads` / `_dlt_version` bookkeeping among them, outside the caller's retry
+budget. Widening this cap is also what lets a consumer adopt a newer framework at
+all: a transitive cap here bounds them whatever their own pin says.
 
 **How — in `pyproject.toml`:**
 
@@ -352,7 +359,7 @@ tracks one tested minor at a time.
 dependencies = [
     "dlt>=1.28.1,<1.29",          # subclass dlt internals -> cap the minor
     "hotdata>=0.9.0,<0.10",        # generated client: query/results APIs
-    "hotdata-framework>=0.12.0,<0.13",  # managed-table load and layout helpers
+    "hotdata-framework>=0.13.0,<0.14",  # managed-table load and layout helpers
     ...
 ]
 ```
