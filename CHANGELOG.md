@@ -19,6 +19,16 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+### Changed
+
+- Require `hotdata-framework>=0.13.0,<0.14` (was `>=0.12.0,<0.13`). No code change
+  — 0.13 is the first release that retries an `append` load, which is the mode
+  this package uses for every `append`/`replace` load and for dlt's own
+  `_dlt_pipeline_state` / `_dlt_loads` / `_dlt_version` writes, so before it a
+  caller's `max_retries` did not reach the loads most likely to be refused for
+  table lock contention. Unblocks downstream adoption of `hotdata-framework` 0.13:
+  a transitive cap here bounds a consumer whatever their own pin says.
+
 ## [0.14.0] - 2026-08-19
 
 ### Changed

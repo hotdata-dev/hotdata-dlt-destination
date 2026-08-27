@@ -20,14 +20,28 @@ dependencies = [
     # create_managed_database(keys=) / add_managed_table(key=) (framework 0.8.0),
     # for native delete/update/upsert.
     #
-    # The floors are held ABOVE that on purpose, and nothing under src/ requires
-    # either one yet. hotdata 0.9 and framework 0.12 are where the rest of the
-    # toolchain has moved, and framework 0.12 is the first release exposing the
-    # table storage layout API (partition_by / sorted_by on declaration,
-    # managed_table_layout() to read it back) that #63 is written against.
-    # Admitting older versions would mean supporting a matrix nothing tests.
+    # The floors are held ABOVE that on purpose: hotdata 0.9 is where the rest of
+    # the toolchain has moved, and admitting older versions would mean supporting
+    # a matrix nothing tests. The framework floor is the one with a hard reason.
+    #
+    # framework 0.13, because of how THIS package loads. Everything on the
+    # `append`/`replace` disposition path goes out as mode="append" (a replace
+    # target is truncated once at package init, then appended per file), and an
+    # earlier framework runs an append at most once — so a caller's configured
+    # retry budget does not reach the loads this package issues most, including
+    # dlt's own `_dlt_pipeline_state` / `_dlt_loads` / `_dlt_version`
+    # bookkeeping. Those are shared by every pipeline writing to a database, so
+    # they are the likeliest to be refused for lock contention and the least
+    # able to wait one out. 0.13 retries them, keyed on the upload id rather
+    # than the mode. It also carries the table storage layout API
+    # (partition_by / sorted_by on declaration, managed_table_layout() to read
+    # it back) that #63 is written against, first exposed in 0.12.
+    #
+    # The cap stays at the minor for the reason above it, and widening it is
+    # what lets a consumer of this package adopt a newer framework at all: a
+    # transitive cap here is what blocks them, not their own pin.
     "hotdata>=0.9.0,<0.10",
-    "hotdata-framework>=0.12.0,<0.13",
+    "hotdata-framework>=0.13.0,<0.14",
     "pandas>=2.0",
     "pyarrow>=14",
 ]
