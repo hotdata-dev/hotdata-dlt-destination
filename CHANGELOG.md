@@ -19,6 +19,8 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+## [0.15.0] - 2026-08-27
+
 ### Changed
 
 - Require `hotdata-framework>=0.13.0,<0.14` (was `>=0.12.0,<0.13`). No code change
