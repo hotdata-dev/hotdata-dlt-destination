@@ -26,6 +26,8 @@ Changelog style — terse "bullet + brief why":
   (the git history holds those). These notes are for a reader deciding whether
   to upgrade.
 - Prefer one bullet with semicolon-joined clauses over nested sub-bullets.
+- HARD CAP: three lines per bullet. If it needs more, it belongs in the commit
+  message or the PR, not here.
 - Group under ### Added / Changed / Fixed / Removed. Mark breaking changes
   **Breaking:**. See the released entries below for the target density.
 -->"""
