@@ -135,8 +135,16 @@ class InMemoryBackend:
         elif mode == "append":
             result = _pa.concat_tables([existing, incoming], promote_options="permissive")
         else:
-            # key-based modes: match rows by the table's declared key.
-            key_cols = self.keys.get(k, [])
+            # key-based modes: the per-load `key` wins over the table's declared
+            # key when given, which is what lets a table declared without one be
+            # matched at all (framework: "when set it is matched per-load
+            # instead of a key declared at table creation").
+            key_cols = list(key) if key else self.keys.get(k, [])
+            if not key_cols:
+                # Matching on no columns would make every row equal to every
+                # other and turn a delete into a table wipe. The server rejects
+                # this ("no declared key"); so must the double.
+                raise ApiException(status=400, reason="table has no declared key")
             ex_rows, inc_rows = existing.to_pylist(), incoming.to_pylist()
 
             def _kt(row: dict) -> tuple:
@@ -171,11 +179,12 @@ class InMemoryBackend:
     def execute_sql(self, database, sql):
         """Execute SQL over this database's stored Arrow tables.
 
-        A plain ``SELECT * FROM "default"."<schema>"."<table>"`` (what the write
+        A plain ``SELECT * FROM "default"."<schema>"."<table>"`` (what the data
         path's ``fetch_table`` emits) short-circuits to the exact stored table so
-        the write-path tests see byte-identical data. Anything richer (the dataset
-        read path: WHERE / LIMIT / aggregates / column projection) runs on a real
-        DataFusion session so dialect behavior matches the production engine.
+        the write-path tests see byte-identical data. Anything richer runs on a
+        real DataFusion session so dialect behavior matches the production engine
+        — that covers the dataset read path (WHERE / LIMIT / aggregates / column
+        projection) and the bookkeeping reads, which carry their predicate in SQL.
         """
         m = re.fullmatch(
             r'\s*SELECT \* FROM "default"\."([^"]+)"\."([^"]+)"\s*', sql, flags=re.IGNORECASE
@@ -188,7 +197,14 @@ class InMemoryBackend:
         ctx = SessionContext()
         for (db, _schema, table), tbl in self.tables.items():
             if db == database:
-                ctx.register_record_batches(table, [tbl.to_batches()])
+                # An empty pyarrow table yields NO batches, and DataFusion
+                # panics registering a zero-batch partition. Register one empty
+                # batch so an emptied table is queryable (and returns no rows)
+                # rather than taking the process down.
+                batches = tbl.to_batches() or [
+                    pa.RecordBatch.from_pylist([], schema=tbl.schema)
+                ]
+                ctx.register_record_batches(table, [batches])
         # Strip the "default"."<schema>". qualifier so bare table names resolve.
         rewritten = re.sub(r'"default"\."[^"]+"\.(?=")', "", sql)
         return ctx.sql(rewritten).to_arrow_table()
@@ -777,3 +793,198 @@ def test_hyphenated_database_name_stays_one_database(backend, tmp_path):
     # And the data is readable back through that same address.
     df = pipe.dataset().table("rows").df()
     assert sorted(df["n"].tolist()) == [1, 2]
+
+
+# --- bookkeeping growth -------------------------------------------------------
+#
+# These tables are read and written on every load, and this destination has no
+# INSERT: a row is added by uploading a parquet file. Adding one by rewriting the
+# whole table makes the cost of a load scale with the number of loads before it,
+# which is what took `_dlt_version` to 54 MB in production. What these tests pin
+# is the shape that avoids it: one version row per distinct SCHEMA (not per
+# load), and appends rather than read-modify-replace.
+
+
+def test_version_table_holds_one_row_per_schema_not_per_load(backend, tmp_path):
+    dest = _dest("e2e_version_growth", ["orders"])
+
+    def _run(i, extra=None):
+        @dlt.resource(name="orders", write_disposition="append")
+        def orders():
+            yield [{"id": i, "amount": 10, **(extra or {})}]
+
+        dlt.pipeline(
+            pipeline_name="p_vg",
+            destination=dest,
+            dataset_name="public",
+            # A fresh pipelines_dir models an ephemeral runner, which is what
+            # makes the destination (not local state) answer the sync reads.
+            pipelines_dir=str(tmp_path / f"r{i}"),
+        ).run(orders())
+
+    _run(0)
+    _run(1)
+    _run(2)
+    version_rows = backend.rows("e2e_version_growth", "_dlt_version")
+    assert len(version_rows) == 1, "unchanged schema must not add a version row"
+
+    # A new column is a new schema hash, which DOES have to be recorded.
+    _run(3, {"note": "new column"})
+    version_rows = backend.rows("e2e_version_growth", "_dlt_version")
+    assert len(version_rows) == 2
+    assert len({r["version_hash"] for r in version_rows}) == 2
+
+    # ...and settling on that schema does not keep adding rows.
+    _run(4, {"note": "same shape"})
+    assert len(backend.rows("e2e_version_growth", "_dlt_version")) == 2
+
+    # One `_dlt_loads` row per load throughout, and every row of data landed.
+    assert len(backend.rows("e2e_version_growth", "_dlt_loads")) == 5
+    assert sorted(r["id"] for r in backend.rows("e2e_version_growth", "orders")) == [
+        0, 1, 2, 3, 4,
+    ]
+
+
+def test_bookkeeping_writes_append_and_never_rewrite(backend, tmp_path):
+    """A `replace` load on a bookkeeping table means the whole table was re-sent."""
+    modes: list[tuple[str, str]] = []
+    original = backend.load_managed_table
+
+    def recording(database, table, *, schema, upload_id, mode="replace", key=None):
+        if table.startswith("_dlt_"):
+            modes.append((table, mode))
+        return original(database, table, schema=schema, upload_id=upload_id, mode=mode, key=key)
+
+    backend.load_managed_table = recording
+    dest = _dest("e2e_bk_modes", ["orders"])
+
+    def _one_row(row_id):
+        @dlt.resource(name="orders", write_disposition="append")
+        def orders():
+            yield [{"id": row_id}]
+
+        return orders
+
+    for i in range(3):
+        dlt.pipeline(
+            pipeline_name="p_bk",
+            destination=dest,
+            dataset_name="public",
+            pipelines_dir=str(tmp_path / f"r{i}"),
+        ).run(_one_row(i)())
+
+    assert modes, "expected bookkeeping writes"
+    assert [m for m in modes if m[1] == "replace"] == []
+    assert {t for t, _ in modes} <= {
+        "_dlt_version",
+        "_dlt_loads",
+        "_dlt_pipeline_state",
+    }
+
+
+def test_pipeline_state_stays_bounded_and_keeps_the_newest(backend, tmp_path):
+    """An incremental pipeline writes a state row per run; only the newest is read.
+
+    The trim is amortised — it fires once the slack is a full retention window —
+    so what is guaranteed is a BOUND (2x max_state_files), not an exact count.
+    """
+    be = _ACTIVE["backend"]
+    database_id = be.create_managed_database(
+        description="e2e_state_prune", schema="public", tables=[]
+    ).id
+    dest = hotdata(
+        credentials=HotdataCredentials(api_key="test"),
+        workspace_id="ws_test",
+        database_id=database_id,
+        database_name="e2e_state_prune",
+        declared_tables=["events"],
+        write_disposition="append",
+        max_state_files=2,
+    )
+
+    def _events_for(run):
+        @dlt.resource(name="events", write_disposition="append", primary_key="id")
+        def events(cursor=dlt.sources.incremental("id", initial_value=0)):  # noqa: B008  (dlt idiom)
+            yield [{"id": n} for n in range(run * 2 + 1, run * 2 + 3)]
+
+        return events
+
+    runs = 8
+    all_load_ids = []
+    for run in range(runs):
+        dlt.pipeline(
+            pipeline_name="p_sp",
+            destination=dest,
+            dataset_name="public",
+            pipelines_dir=str(tmp_path / f"r{run}"),
+        ).run(_events_for(run)())
+        all_load_ids += [
+            r["_dlt_load_id"]
+            for r in backend.rows("e2e_state_prune", "_dlt_pipeline_state")
+        ]
+
+    state_rows = backend.rows("e2e_state_prune", "_dlt_pipeline_state")
+    # Bounded rather than growing with the run count.
+    assert 0 < len(state_rows) <= 4, len(state_rows)
+    # The rows kept are the NEWEST ones. Trimming the wrong end would lose the
+    # cursor and re-yield rows already loaded.
+    newest = sorted(set(all_load_ids))[-len(state_rows) :]
+    assert sorted(r["_dlt_load_id"] for r in state_rows) == newest
+    # And the incremental cursor advanced exactly once per row: every id once,
+    # none re-yielded, none skipped.
+    assert sorted(r["id"] for r in backend.rows("e2e_state_prune", "events")) == list(
+        range(1, runs * 2 + 1)
+    )
+
+
+def test_state_trim_keeps_each_pipelines_own_newest_rows(backend, tmp_path):
+    """Several pipelines can share a dataset, and `complete_load` is not told which
+    pipeline it is running for. The trim groups by pipeline_name so one pipeline's
+    load cannot drop another's cursor and send it back to re-ingest from zero."""
+    be = _ACTIVE["backend"]
+    database_id = be.create_managed_database(
+        description="e2e_two_pipes", schema="public", tables=[]
+    ).id
+
+    def _dest_for(tables):
+        return hotdata(
+            credentials=HotdataCredentials(api_key="test"),
+            workspace_id="ws_test",
+            database_id=database_id,
+            database_name="e2e_two_pipes",
+            declared_tables=tables,
+            write_disposition="append",
+            max_state_files=2,
+        )
+
+    def _resource(name, run, span):
+        @dlt.resource(name=name, write_disposition="append", primary_key="id")
+        def rows(cursor=dlt.sources.incremental("id", initial_value=0)):  # noqa: B008  (dlt idiom)
+            yield [{"id": n} for n in range(run * span + 1, run * span + 1 + span)]
+
+        return rows
+
+    rounds = 8
+    for run in range(rounds):
+        for pipe, table, span in (("pipe_a", "ev_a", 2), ("pipe_b", "ev_b", 3)):
+            dlt.pipeline(
+                pipeline_name=pipe,
+                destination=_dest_for([table]),
+                dataset_name="public",
+                pipelines_dir=str(tmp_path / f"{pipe}{run}"),
+            ).run(_resource(table, run, span)())
+
+    state_rows = backend.rows("e2e_two_pipes", "_dlt_pipeline_state")
+    per_pipeline: dict[str, int] = {}
+    for row in state_rows:
+        per_pipeline[row["pipeline_name"]] = per_pipeline.get(row["pipeline_name"], 0) + 1
+    assert sorted(per_pipeline) == ["pipe_a", "pipe_b"]
+    assert all(1 <= n <= 4 for n in per_pipeline.values()), per_pipeline
+
+    # Neither pipeline lost its cursor: every id once, none re-yielded or skipped.
+    assert sorted(r["id"] for r in backend.rows("e2e_two_pipes", "ev_a")) == list(
+        range(1, rounds * 2 + 1)
+    )
+    assert sorted(r["id"] for r in backend.rows("e2e_two_pipes", "ev_b")) == list(
+        range(1, rounds * 3 + 1)
+    )

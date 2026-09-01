@@ -19,6 +19,31 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+### Added
+
+- `max_state_files` (default 100) trims `_dlt_pipeline_state` to the newest N rows
+  per pipeline. An incremental pipeline writes one row per run and only the newest
+  is ever read, so the table grew without bound; set 0 to keep every row.
+
+### Changed
+
+- Bookkeeping tables are appended to rather than read and rewritten whole on every
+  load, and `_dlt_version` gains a row only when the schema hash changes (as every
+  other dlt destination does) instead of once per load; per-load cost no longer
+  scales with the number of loads before it.
+- `get_stored_schema`, `get_stored_schema_by_hash` and `get_stored_state` push their
+  predicate into SQL (`WHERE` / `ORDER BY` / `LIMIT`, and a join to `_dlt_loads`)
+  rather than fetching the whole table and filtering client-side.
+
+### Fixed
+
+- A failed read of `_dlt_version` or `_dlt_loads` no longer replaces the table with
+  a single row. The error was swallowed, the "existing rows" came back empty, and
+  the rewrite discarded all load and schema history — which also left
+  `get_stored_state` with no completed load to match, so pipeline state never
+  restored and every run started cold. Internal-table reads now tell "not created
+  yet" apart from a real failure and raise on the latter.
+
 ### Fixed
 
 - `HotdataSourceClient` now defines its own `_poll` rather than inheriting one from

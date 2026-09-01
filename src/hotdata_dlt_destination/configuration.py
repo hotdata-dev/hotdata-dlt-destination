@@ -53,6 +53,12 @@ class HotdataClientConfiguration(DestinationClientConfiguration):
     409s for tens of seconds — the budget must outlast
     that, not just blips. 8 attempts x 1.5s linear backoff ~= 42s."""
     retry_backoff_seconds: float = 1.5
+    max_state_files: int = 100
+    """How many `_dlt_pipeline_state` rows to keep per pipeline.
+
+    An incremental pipeline writes one state row per run, and only the newest
+    matching row is ever read — the rest are history the destination never
+    consults. Set to 0 (or less) to keep every row."""
     max_table_nesting: int | None = None
     """Override the default maximum table nesting depth."""
     loader_parallelism_strategy: str | None = None
