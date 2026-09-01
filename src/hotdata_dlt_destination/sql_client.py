@@ -44,8 +44,6 @@ if TYPE_CHECKING:
 
     from hotdata_dlt_destination.configuration import HotdataClientConfiguration
 
-# Substrings that identify a "table/relation does not exist" error across the
-# Postgres surface DataFusion presents (matched case-insensitively).
 def _chain_messages(ex: Exception, limit: int = 6) -> str:
     """Join the messages of ``ex`` and its ``__cause__`` chain (lowercased).
 

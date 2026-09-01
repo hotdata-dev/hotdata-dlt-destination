@@ -18,7 +18,7 @@ from dlt.common.schema.typing import (
 from hotdata_dlt_destination import hotdata
 from hotdata_dlt_destination import job_client as jc
 from hotdata_dlt_destination.configuration import HotdataClientConfiguration, HotdataCredentials
-from hotdata_dlt_destination.errors import HotdataTerminalError
+from hotdata_dlt_destination.errors import UNDEFINED_RELATION_MARKERS, HotdataTerminalError
 from hotdata_dlt_destination.job_client import HotdataJobClient, HotdataLoadJob, _declared_tables
 
 
@@ -47,6 +47,11 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
 
         def fetch_table(self, *, schema, table):
             return store.get(table)
+
+        def list_managed_tables(self, *, schema):
+            # Every table in the store is declared AND loaded; a table that is
+            # declared but awaiting its first load is modelled per-test.
+            return [SimpleNamespace(table=name, synced=True) for name in store]
 
         def execute_sql(self, sql: str) -> pa.Table:
             """Run the pushdown reads on a real engine, so dialect behaviour matches.
@@ -904,7 +909,7 @@ def test_internal_read_raises_rather_than_reading_as_empty(monkeypatch) -> None:
     on every load — the unbounded growth would come back with nothing to see in
     the logs.
     """
-    store: dict[str, pa.Table] = {}
+    store: dict[str, pa.Table] = {VERSION_TABLE_NAME: pa.Table.from_pylist([{"a": 1}])}
 
     class BrokenApi(_make_fake_api_cls(store)):  # type: ignore[misc,valid-type]
         def execute_sql(self, sql: str):
@@ -913,8 +918,40 @@ def test_internal_read_raises_rather_than_reading_as_empty(monkeypatch) -> None:
     monkeypatch.setattr(jc, "HotdataClient", BrokenApi)
     client = HotdataJobClient(Schema("events"), _config(), hotdata().capabilities())
 
-    with pytest.raises(HotdataTerminalError):
+    # Mapped to a dlt exception, not raw: dlt reads retryability off these.
+    with pytest.raises(DestinationTerminalException):
         client.get_stored_schema()
+
+
+def test_internal_read_is_empty_while_a_table_awaits_its_first_load(monkeypatch) -> None:
+    """A declared-but-never-loaded table is an empty read, not a failure.
+
+    `initialize_storage` declares all three internal tables, so the first read of
+    a new database hits exactly this state. The server does not word it as a
+    missing relation, so the marker list cannot catch it — the sync probe does.
+    Getting this wrong fails the first load against every new database.
+    """
+    store: dict[str, pa.Table] = {}
+    # Verbatim from the API for a declared, unsynced managed table.
+    message = (
+        "400: Bad Request — {\"error\":{\"code\":\"BAD_REQUEST\",\"message\":\"Managed table "
+        "'default.public._dlt_version' is declared but has no data; POST a load "
+        "before querying\"}}"
+    )
+    assert not any(m in message.lower() for m in UNDEFINED_RELATION_MARKERS)
+
+    class DeclaredUnsyncedApi(_make_fake_api_cls(store)):  # type: ignore[misc,valid-type]
+        def execute_sql(self, sql: str):
+            raise HotdataTerminalError(message)
+
+        def list_managed_tables(self, *, schema):
+            return [SimpleNamespace(table=VERSION_TABLE_NAME, synced=False)]
+
+    monkeypatch.setattr(jc, "HotdataClient", DeclaredUnsyncedApi)
+    client = HotdataJobClient(Schema("events"), _config(), hotdata().capabilities())
+
+    assert client.get_stored_schema() is None
+    assert client.get_stored_schema_by_hash("whatever") is None
 
 
 def test_internal_read_is_empty_when_the_table_is_not_there_yet(monkeypatch) -> None:

@@ -646,7 +646,8 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         where = f" WHERE schema_name = {self._lit(schema_name)}" if schema_name else ""
         rows = self._query_internal_rows(
             f"SELECT * FROM {self._internal_ref(VERSION_TABLE_NAME)}{where}"
-            f" ORDER BY inserted_at DESC LIMIT 1"
+            f" ORDER BY inserted_at DESC LIMIT 1",
+            tables=(VERSION_TABLE_NAME,),
         )
         if not rows:
             return None
@@ -655,7 +656,8 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
     def get_stored_schema_by_hash(self, version_hash: str) -> StorageSchemaInfo | None:
         rows = self._query_internal_rows(
             f"SELECT * FROM {self._internal_ref(VERSION_TABLE_NAME)}"
-            f" WHERE version_hash = {self._lit(version_hash)} LIMIT 1"
+            f" WHERE version_hash = {self._lit(version_hash)} LIMIT 1",
+            tables=(VERSION_TABLE_NAME,),
         )
         if not rows:
             return None
@@ -671,7 +673,8 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
             f" JOIN {self._internal_ref(LOADS_TABLE_NAME)} AS l"
             f" ON l.load_id = s._dlt_load_id"
             f" WHERE s.pipeline_name = {self._lit(pipeline_name)} AND l.status = 0"
-            f" ORDER BY s._dlt_load_id DESC LIMIT 1"
+            f" ORDER BY s._dlt_load_id DESC LIMIT 1",
+            tables=(PIPELINE_STATE_TABLE_NAME, LOADS_TABLE_NAME),
         )
         if not rows:
             return None
@@ -695,21 +698,53 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
     def _lit(self, value: Any) -> str:
         return self.capabilities.escape_literal(value)
 
-    def _query_internal_rows(self, sql: str) -> list[dict[str, Any]]:
-        """Run a pushdown query over the internal tables.
+    def _query_internal_rows(self, sql: str, *, tables: tuple[str, ...]) -> list[dict[str, Any]]:
+        """Run a pushdown query over the internal tables named in `tables`.
 
         These tables are read on every load and grow one row per load, so the
         predicate has to run server-side: fetching them whole and filtering here
         makes the cost of a load scale with the number of loads before it.
+
+        "Nothing stored yet" has to be told apart from a query this code got
+        wrong, because reading a real failure as "no rows" is what would let the
+        guard in _write_schema_to_storage quietly stop guarding. A table that is
+        declared but never loaded is one of those legitimate empties, and the
+        server reports it in its own words rather than as a missing relation --
+        initialize_storage declares all three internal tables, so the first read
+        of a new database lands in exactly that state. Rather than matching more
+        phrasing, ask; the probe runs only on the error path, so a query that
+        succeeds pays nothing for it.
         """
         with _hotdata_api(self.config) as api:
             try:
                 table = api.execute_sql(sql)
-            except (KeyError, HotdataTerminalError) as exc:
-                if _is_missing_storage(exc):
+            except (KeyError, HotdataTerminalError, HotdataTransientError) as exc:
+                if _is_missing_storage(exc) or self._awaiting_first_load(api, tables):
                     return []
-                raise
+                # dlt reads retryability off these two exceptions, and a raw
+                # framework error reaching it unclassified aborts a run that a
+                # retry would have carried.
+                if isinstance(exc, HotdataTransientError):
+                    raise DestinationTransientException(str(exc)) from exc
+                raise DestinationTerminalException(str(exc)) from exc
             return table.to_pylist() if table is not None else []
+
+    def _awaiting_first_load(self, api: HotdataClient, tables: tuple[str, ...]) -> bool:
+        """Is any of `tables` declared but not yet holding data?
+
+        Such a table cannot be queried, and for the internal tables that means
+        the same thing as an empty result. A table absent from the listing
+        counts as well -- there is nothing to read there either.
+        """
+        try:
+            synced = {
+                managed.table: managed.synced
+                for managed in api.list_managed_tables(schema=self.config.schema)
+            }
+        except (KeyError, HotdataTerminalError, HotdataTransientError):
+            # Cannot tell; leave the original error to be raised.
+            return False
+        return any(not synced.get(name, False) for name in tables)
 
     def _write_schema_to_storage(self) -> None:
         """Store the current schema, unless this exact schema is already stored.
@@ -788,9 +823,10 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
             # row carries the whole compressed state, so reading those is deferred
             # to the loads that actually rewrite.
             index = self._query_internal_rows(
-                f"SELECT _dlt_id, _dlt_load_id, pipeline_name FROM {state_ref}"
+                f"SELECT _dlt_id, _dlt_load_id, pipeline_name FROM {state_ref}",
+                tables=(PIPELINE_STATE_TABLE_NAME,),
             )
-        except (HotdataTerminalError, HotdataTransientError) as exc:
+        except (DestinationTerminalException, DestinationTransientException) as exc:
             logger.warning("hotdata: could not read %s to trim it: %s", state_ref, exc)
             return
         if len(index) <= keep:
@@ -810,7 +846,9 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
             return
 
         try:
-            rows = self._query_internal_rows(f"SELECT * FROM {state_ref}")
+            rows = self._query_internal_rows(
+                f"SELECT * FROM {state_ref}", tables=(PIPELINE_STATE_TABLE_NAME,)
+            )
             kept = [r for r in rows if r["_dlt_id"] in keep_ids]
             if not kept or len(kept) == len(rows):
                 # The table moved between the two reads (a concurrent load). Doing
@@ -824,7 +862,12 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                     kept,
                     mode="replace",
                 )
-        except (HotdataTerminalError, HotdataTransientError) as exc:
+        except (
+            HotdataTerminalError,
+            HotdataTransientError,
+            DestinationTerminalException,
+            DestinationTransientException,
+        ) as exc:
             logger.warning(
                 "hotdata: could not trim %s (%d stale row(s) left in place): %s",
                 PIPELINE_STATE_TABLE_NAME,
