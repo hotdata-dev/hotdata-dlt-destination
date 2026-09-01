@@ -279,11 +279,13 @@ Arrow result fetching end to end.
 `factory.py::_raw_capabilities`:
 
 ```python
-from dlt.common.data_writers.escape import escape_postgres_identifier, escape_postgres_literal
+from dlt.common.data_writers.escape import escape_postgres_identifier
 
-caps.sqlglot_dialect  = "postgres"                    # engine is DataFusion, Postgres-compatible
-caps.escape_identifier = escape_postgres_identifier   # quotes "default"."public"."t"
-caps.escape_literal    = escape_hotdata_literal      # NOT postgres: it emits E'...'
+from hotdata_dlt_destination.escape import escape_hotdata_literal
+
+caps.sqlglot_dialect   = "postgres"                   # engine is DataFusion, Postgres-compatible
+caps.escape_identifier = escape_postgres_identifier   # quotes "<catalog>"."public"."t"
+caps.escape_literal    = escape_hotdata_literal       # NOT postgres: that emits E'...'
 ```
 
 - **`sqlglot_dialect`**: sqlglot/dlt have no `datafusion` dialect; `postgres` is the documented-compatible
