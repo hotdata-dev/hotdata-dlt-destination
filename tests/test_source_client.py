@@ -1139,3 +1139,68 @@ def test_read_rows_returns_empty_for_an_unpersisted_but_verified_zero() -> None:
     client = FakeSourceClient(table=empty, truncated=False, result_id=None)
     assert client.read_rows("SELECT * FROM public.t", database_id=DB) == []
     assert client.fetch_calls == 0
+
+
+def test_the_readiness_poll_is_owned_here_not_inherited() -> None:
+    """`_poll` must be defined on this class, not merely reachable through it.
+
+    It used to live on `ManagedDatabaseClient`, and this client called it without
+    defining one. When that base stopped waiting on the result and started
+    waiting on the query run, the generic helper lost its second caller there and
+    was removed -- and both readiness waits here would have become
+    `AttributeError` on the next framework release that this package's pin
+    accepted. Nothing in this suite would have caught it, because the method
+    resolved fine against the version installed at the time.
+
+    Reaching into a private method on a base class from another distribution is
+    the thing that made that possible, so the assertion is about ownership rather
+    than about the attribute merely existing.
+    """
+    assert "_poll" in HotdataSourceClient.__dict__, (
+        "_poll must be defined on HotdataSourceClient; inheriting it from "
+        "hotdata-framework couples this package to a private method it does not own"
+    )
+
+
+def test_poll_stops_on_a_run_that_was_interrupted() -> None:
+    """`interrupted` is terminal, and was in neither status this poll knew.
+
+    An interrupted run therefore satisfied no branch, so the wait ran to its full
+    300-second bound and then reported a timeout -- naming the wrong problem, and
+    charging five minutes for it.
+    """
+    client = HotdataSourceClient.__new__(HotdataSourceClient)
+    calls: list[str] = []
+
+    def fetch() -> SimpleNamespace:
+        calls.append("poll")
+        return SimpleNamespace(status="interrupted", error_message="instance lost")
+
+    with pytest.raises(RuntimeError, match="instance lost"):
+        client._poll(fetch, is_ready=lambda r: r.status == "ready", describe="Result r1")
+
+    # One request, not a timeout's worth.
+    assert calls == ["poll"]
+
+
+def test_poll_keeps_waiting_on_an_unknown_status_and_names_it_on_timeout() -> None:
+    """An unrecognised status waits rather than ending the wait.
+
+    Treating an unknown status as terminal is the easier failure to diagnose and
+    much the worse one to suffer: a single status added upstream would fail every
+    read at once, where waiting costs one slow call. What makes the omission
+    findable is the timeout naming the status it last saw -- which is exactly
+    what was missing while `interrupted` went unrecognised.
+    """
+    client = HotdataSourceClient.__new__(HotdataSourceClient)
+
+    def fetch() -> SimpleNamespace:
+        return SimpleNamespace(status="something_new", error_message=None)
+
+    with (
+        pytest.MonkeyPatch.context() as mp,
+        pytest.raises(TimeoutError, match="something_new"),
+    ):
+        mp.setattr(HotdataSourceClient, "_QUERY_TIMEOUT_SECONDS", 0.05)
+        mp.setattr(HotdataSourceClient, "_POLL_INTERVAL_SECONDS", 0.0)
+        client._poll(fetch, is_ready=lambda r: r.status == "ready", describe="Result r1")

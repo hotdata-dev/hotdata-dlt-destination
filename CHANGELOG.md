@@ -19,6 +19,18 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+### Fixed
+
+- `HotdataSourceClient` now defines its own `_poll` rather than inheriting one from
+  `ManagedDatabaseClient`, which no longer provides it: the framework's managed
+  client waits on the query run instead of on the result body, and dropped the
+  shared helper with it. Both readiness waits here would otherwise raise
+  `AttributeError` on the next `hotdata-framework` release this pin accepts. The
+  local copy treats `interrupted` as terminal — it was absent, so an interrupted
+  run waited out the full 300s bound and then reported a timeout — and drops
+  `cancelled`, which this API does not send; an unrecognised status keeps waiting
+  and the timeout names it.
+
 ## [0.15.0] - 2026-08-27
 
 ### Changed
