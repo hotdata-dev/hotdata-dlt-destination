@@ -283,7 +283,7 @@ from dlt.common.data_writers.escape import escape_postgres_identifier, escape_po
 
 caps.sqlglot_dialect  = "postgres"                    # engine is DataFusion, Postgres-compatible
 caps.escape_identifier = escape_postgres_identifier   # quotes "default"."public"."t"
-caps.escape_literal    = escape_postgres_literal
+caps.escape_literal    = escape_hotdata_literal      # NOT postgres: it emits E'...'
 ```
 
 - **`sqlglot_dialect`**: sqlglot/dlt have no `datafusion` dialect; `postgres` is the documented-compatible
@@ -294,8 +294,11 @@ caps.escape_literal    = escape_postgres_literal
   in dlt 1.28.1 — they default to `None`. `make_qualified_table_name` calls
   `capabilities.escape_identifier(...)` to quote each name, so without these the first qualified name on
   the read path raises `TypeError: 'NoneType' object is not callable`. Every SQL destination sets them
-  explicitly (we mirror `dlt.destinations.impl.postgres`). The write path never needed them, which is why
-  they were absent before this work.
+  explicitly. `escape_identifier` mirrors `dlt.destinations.impl.postgres`; `escape_literal` deliberately
+  does **not** — the Postgres one emits the extended form `E'...'`, which this engine's parser rejects
+  outright (`Expected: an expression, found: E'...'`), so it would fail every predicate carrying a
+  literal. `escape_hotdata_literal` (in `escape.py`) keeps dlt's shape without the prefix. The write path
+  never needed either, which is why they were absent before this work.
 
 ### Three front-ends, one execution path
 

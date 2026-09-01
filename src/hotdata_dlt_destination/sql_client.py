@@ -11,7 +11,6 @@ rather than execute anything locally. See ``docs/sql-client-spec.md``.
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, AnyStr, ClassVar
@@ -237,8 +236,17 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
         # typed dlt error from the query itself (has_dataset catches it likewise).
         catalog = "default"
         if self._client is not None:
-            with contextlib.suppress(KeyError):
+            try:
                 catalog = self._client.catalog
+            except KeyError:
+                # Nothing resolved yet -- the default-qualified form is right.
+                pass
+            except (HotdataTerminalError, HotdataTransientError) as exc:
+                # `catalog` binds the database on the first read of a run, so this
+                # is an HTTP failure, not "nothing configured". Falling back would
+                # build a wrong catalog and report a missing table instead of the
+                # real error -- and dlt reads retryability off the typed exception.
+                raise self._make_database_exception(exc) from exc
         if casefold:
             catalog = self.capabilities.casefold_identifier(catalog)
         if quote:

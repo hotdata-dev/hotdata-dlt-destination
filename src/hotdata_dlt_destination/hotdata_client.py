@@ -88,6 +88,10 @@ class HotdataClient(ManagedDatabaseClient):
         if self._config is not None:
             self._config._hotdata_db = db
             self._config._hotdata_db_created = created
+            if db is None:
+                # The catalog belongs to the record; outliving it would leave a
+                # stale name for whatever is resolved next.
+                self._config._hotdata_catalog = None
 
     def _cache_catalog(self, catalog: str | None) -> None:
         if self._config is not None:

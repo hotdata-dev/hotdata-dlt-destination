@@ -231,3 +231,33 @@ def test_catalog_name_falls_back_when_no_database_is_resolved() -> None:
 
     assert sc.catalog_name() == '"default"'
     assert sc.make_qualified_table_name("t") == '"default"."public"."t"'
+
+
+def test_catalog_name_maps_an_api_failure_instead_of_falling_back() -> None:
+    """A transient API failure must not silently become the `default` catalog.
+
+    `catalog` binds the database on the first read of a run, so it can fail over
+    HTTP. Falling back there would build a wrong catalog and report a missing
+    table rather than the real error, and dlt reads retryability off the typed
+    exception.
+    """
+
+    class Transient:
+        @property
+        def catalog(self) -> str:
+            raise HotdataTransientError("503: Service Unavailable")
+
+    sc = _client()
+    sc._client = Transient()
+    with pytest.raises(DatabaseTransientException):
+        sc.catalog_name()
+
+    class Terminal:
+        @property
+        def catalog(self) -> str:
+            raise HotdataTerminalError("400: Bad Request")
+
+    sc2 = _client()
+    sc2._client = Terminal()
+    with pytest.raises(DatabaseTerminalException):
+        sc2.catalog_name()
