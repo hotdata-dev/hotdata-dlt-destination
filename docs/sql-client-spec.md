@@ -159,7 +159,7 @@ def __init__(self, managed_database, schema, capabilities, config):
 
 | Method | Behavior | Why |
 |---|---|---|
-| `catalog_name(quote, casefold) -> str` | Return `"default"` (quoted as needed). | Hotdata's catalog is always `default`; makes `make_qualified_table_name` emit `default.public.<table>`. |
+| `catalog_name(quote, casefold) -> str` | Return the database's own catalog, quoted as needed. | `default` only when the database was created WITHOUT a catalog override; otherwise it answers to the override, and a `default`-qualified reference does not resolve. Makes `make_qualified_table_name` emit `<catalog>.public.<table>`. |
 | `has_dataset() -> bool` | Override to check via `self._client.list_managed_tables(...)` rather than the base's `INFORMATION_SCHEMA.SCHEMATA` query. | Don't depend on DataFusion's information_schema shape; avoids param-bound SQL. |
 
 ### Inherited, unused (documented, not called on the read path)
@@ -240,7 +240,8 @@ Two properties worth stating explicitly:
 A single dlt "location" splits into **two independent mechanisms**:
 
 1. **Table path — goes into the SQL.** `make_qualified_table_name("spans")` →
-   `"default"."public"."spans"` because `catalog_name()="default"` and `dataset_name="public"`.
+   `"default"."public"."spans"` because `catalog_name()="default"` (this database took no
+   catalog override) and `dataset_name="public"`.
 2. **Database scoping — goes into the request, not the SQL.** Query scoping is by database **id**
    (`_query_database_scoped(database_id=...)` → `X-Database-Id` header). `HotdataClient.execute_sql`
    resolves the run's database **by id** from the bound config (`database_id`, or the record created
@@ -389,7 +390,8 @@ Drive `HotdataSqlClient`/`HotdataCursor` with a fake `HotdataClient` whose `exec
 canned `pyarrow.Table`:
 - `execute_query` yields a cursor; `fetchall/fetchmany/fetchone` paginate correctly.
 - `description` reflects columns; `.df()` and `.arrow()` produce the right shape/values.
-- `catalog_name()` → `default`; `make_qualified_table_name("t")` → `"default"."public"."t"`.
+- `catalog_name()` → the database's own catalog (`default` absent an override); with
+  `default` that makes `make_qualified_table_name("t")` → `"default"."public"."t"`.
 - `begin_transaction()` is a no-op context manager.
 - `_make_database_exception` maps undefined-relation → `DatabaseUndefinedRelation`.
 - `has_dataset()` uses `list_managed_tables`, not information_schema.

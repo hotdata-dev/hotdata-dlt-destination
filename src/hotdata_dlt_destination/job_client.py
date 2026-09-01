@@ -51,6 +51,7 @@ from hotdata_dlt_destination.errors import (
     HotdataTerminalError,
     HotdataTransientError,
 )
+from hotdata_dlt_destination.escape import quote_hotdata_string
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 from hotdata_dlt_destination.layout import (
     LayoutError,
@@ -146,13 +147,14 @@ def _sql_literal(value: str) -> str:
     because datafusion-python accepts ``E'...'`` where the server does not, so
     the escaping has to be right by construction here.
 
-    Doubling the quote is the whole job: the engine treats strings as
-    standard-conforming, so a backslash is a literal backslash and carries no
-    escape meaning (verified against the API).
+    Strict about `str` on purpose: every call site passes a schema name, version
+    hash or pipeline name, and a silent ``str()`` of something else is how a
+    literal stops being escaped. The general-purpose form lives in escape.py and
+    backs the destination capability.
     """
     if not isinstance(value, str):
         raise TypeError(f"SQL literal must be a str, got {type(value).__name__}")
-    return "'" + value.replace("'", "''") + "'"
+    return quote_hotdata_string(value)
 
 
 def _is_missing_storage(exc: Exception) -> bool:
@@ -862,7 +864,7 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         keep = self.config.max_state_files
         if keep < 1:
             return
-        state_ref = f"{PIPELINE_STATE_TABLE_NAME!r} in the instant database"
+        state_label = f"{PIPELINE_STATE_TABLE_NAME!r} in the instant database"
         try:
             # Decide on three narrow columns. This runs on every load, and a state
             # row carries the whole compressed state, so reading those is deferred
@@ -875,7 +877,7 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
                 tables=(PIPELINE_STATE_TABLE_NAME,),
             )
         except (DestinationTerminalException, DestinationTransientException) as exc:
-            logger.warning("hotdata: could not read %s to trim it: %s", state_ref, exc)
+            logger.warning("hotdata: could not read %s to trim it: %s", state_label, exc)
             return
         if len(index) <= keep:
             return

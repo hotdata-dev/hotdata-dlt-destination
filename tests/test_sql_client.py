@@ -211,3 +211,23 @@ def test_make_exception_maps_terminal() -> None:
 def test_make_exception_passthrough() -> None:
     original = DatabaseUndefinedRelation(Exception("boom"))
     assert HotdataSqlClient._make_database_exception(original) is original
+
+
+def test_catalog_name_falls_back_when_no_database_is_resolved() -> None:
+    """`catalog_name` runs outside @raise_database_error.
+
+    `HotdataClient.catalog` resolves the database and raises KeyError when none is
+    configured. Letting that escape means the caller sees a KeyError from
+    identifier construction rather than a typed dlt error from the query.
+    """
+
+    class NoDatabase:
+        @property
+        def catalog(self) -> str:
+            raise KeyError("no instant database resolved for this run (set database_id)")
+
+    sc = _client()
+    sc._client = NoDatabase()
+
+    assert sc.catalog_name() == '"default"'
+    assert sc.make_qualified_table_name("t") == '"default"."public"."t"'

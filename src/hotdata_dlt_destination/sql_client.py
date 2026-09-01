@@ -11,6 +11,7 @@ rather than execute anything locally. See ``docs/sql-client-spec.md``.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, AnyStr, ClassVar
@@ -230,7 +231,14 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
     def catalog_name(self, quote: bool = True, casefold: bool = True) -> str | None:
         # The database's own catalog answers to "default" only when it was created
         # without a catalog override, so take the resolved name when there is one.
-        catalog = self._client.catalog if self._client is not None else "default"
+        # `catalog` resolves the database, which raises KeyError when none is
+        # configured -- and this runs outside @raise_database_error, so a raw
+        # KeyError would escape identifier construction instead of surfacing as a
+        # typed dlt error from the query itself (has_dataset catches it likewise).
+        catalog = "default"
+        if self._client is not None:
+            with contextlib.suppress(KeyError):
+                catalog = self._client.catalog
         if casefold:
             catalog = self.capabilities.casefold_identifier(catalog)
         if quote:

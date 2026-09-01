@@ -1169,10 +1169,17 @@ def test_the_state_trim_also_qualifies_with_the_real_catalog(monkeypatch) -> Non
 
 
 def test_sql_literal_is_a_plain_quoted_string_not_the_postgres_e_form() -> None:
+    from dlt.common.data_writers.escape import escape_postgres_literal
+
     assert jc._sql_literal("events") == "'events'"
     assert not jc._sql_literal("events").startswith("E")
-    # ...and it is NOT what dlt's postgres escaper would produce.
-    assert jc._sql_literal("events") != hotdata().capabilities().escape_literal("events")
+    # dlt's postgres escaper is what this must NOT be: it emits the extended form
+    # the engine rejects.
+    assert escape_postgres_literal("events") == "E'events'"
+    assert jc._sql_literal("events") != escape_postgres_literal("events")
+    # ...and the destination capability carries the plain form too, so no dlt path
+    # reading the capability can reintroduce E'...'.
+    assert hotdata().capabilities().escape_literal("events") == "'events'"
 
 
 def test_sql_literal_doubles_embedded_quotes() -> None:
