@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from dlt.common.schema.typing import (
 from hotdata_dlt_destination import hotdata
 from hotdata_dlt_destination import job_client as jc
 from hotdata_dlt_destination.configuration import HotdataClientConfiguration, HotdataCredentials
+from hotdata_dlt_destination.errors import UNDEFINED_RELATION_MARKERS, HotdataTerminalError
 from hotdata_dlt_destination.job_client import HotdataJobClient, HotdataLoadJob, _declared_tables
 
 
@@ -46,18 +48,61 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
         def fetch_table(self, *, schema, table):
             return store.get(table)
 
+        def list_managed_tables(self, *, schema):
+            # Every table in the store is declared AND loaded; a table that is
+            # declared but awaiting its first load is modelled per-test.
+            return [SimpleNamespace(table=name, synced=True) for name in store]
+
+        def execute_sql(self, sql: str) -> pa.Table:
+            """Run the pushdown reads on a real engine, so dialect behaviour matches.
+
+            The internal-table reads carry their predicate in SQL (WHERE / ORDER
+            BY / LIMIT / a join), so a store lookup cannot stand in for them.
+            """
+            from datafusion import SessionContext
+
+            ctx = SessionContext()
+            for name, tbl in store.items():
+                # An empty pyarrow table yields NO batches, and DataFusion panics
+                # registering a zero-batch partition.
+                batches = tbl.to_batches() or [
+                    pa.RecordBatch.from_pylist([], schema=tbl.schema)
+                ]
+                ctx.register_record_batches(name, [batches])
+            # Strip the "default"."<schema>". qualifier so bare names resolve.
+            rewritten = re.sub(r'"default"\."[^"]+"\.(?=")', "", sql)
+            try:
+                return ctx.sql(rewritten).to_arrow_table()
+            except Exception as exc:
+                # The real client surfaces query failures as HotdataTerminalError;
+                # an unknown table has to look the same here so the production
+                # "nothing stored yet" path is what the tests exercise.
+                raise HotdataTerminalError(str(exc)) from exc
+
         def upload_parquet(self, path: str) -> str:
             self._pending = pq.read_table(path)
             return "upload_1"
 
         def load_managed_table(self, table, *, schema, upload_id, mode="replace", key=None):
             assert self._pending is not None
-            # Mode-faithful, like the server: append accumulates, replace overwrites.
+            # Mode-faithful, like the server: append accumulates, replace
+            # overwrites, delete removes the incoming keys.
             existing = store.get(table)
             if mode == "append" and existing is not None:
                 store[table] = pa.concat_tables(
                     [existing, self._pending], promote_options="permissive"
                 )
+            elif mode == "delete":
+                if existing is not None:
+                    assert key, "delete needs a key"
+                    doomed = {
+                        tuple(r[k] for k in key) for r in self._pending.to_pylist()
+                    }
+                    kept = [
+                        r for r in existing.to_pylist()
+                        if tuple(r[k] for k in key) not in doomed
+                    ]
+                    store[table] = pa.Table.from_pylist(kept, schema=existing.schema)
             else:
                 store[table] = self._pending
             return SimpleNamespace(full_name=f"db_1.{schema}.{table}")
@@ -483,10 +528,10 @@ def test_hard_delete_fallback_on_missing_server_key_excludes_flagged(tmp_path, m
 # --- state sync ---
 
 
-def _client(store: dict[str, pa.Table], monkeypatch) -> HotdataJobClient:
+def _client(store: dict[str, pa.Table], monkeypatch, **config_overrides) -> HotdataJobClient:
     monkeypatch.setattr(jc, "HotdataClient", _make_fake_api_cls(store))
     schema = Schema("events")
-    return HotdataJobClient(schema, _config(), hotdata().capabilities())
+    return HotdataJobClient(schema, _config(**config_overrides), hotdata().capabilities())
 
 
 def test_complete_load_appends_loads_row(monkeypatch) -> None:
@@ -828,3 +873,213 @@ def test_an_invalid_stored_hint_is_terminal_in_initialize_storage(monkeypatch) -
     )
     with pytest.raises(DestinationTerminalException, match="sideways"):
         client.initialize_storage()
+
+
+# --- bookkeeping reads and writes ---------------------------------------------
+
+
+def test_write_schema_skips_a_hash_already_stored(monkeypatch) -> None:
+    """One version row per distinct schema. Each row carries a full copy of the
+    schema JSON, so a row per load is what made this table grow without bound."""
+    store: dict[str, pa.Table] = {}
+    client = _client(store, monkeypatch)
+
+    client._write_schema_to_storage()
+    assert len(store[VERSION_TABLE_NAME].to_pylist()) == 1
+
+    client._write_schema_to_storage()
+    client._write_schema_to_storage()
+    assert len(store[VERSION_TABLE_NAME].to_pylist()) == 1
+
+    # A changed schema is a changed hash, which must be recorded.
+    client.schema.update_table(
+        {"name": "orders", "columns": {"id": {"name": "id", "data_type": "bigint"}}}
+    )
+    client.schema._bump_version()
+    client._write_schema_to_storage()
+    rows = store[VERSION_TABLE_NAME].to_pylist()
+    assert len(rows) == 2
+    assert len({r["version_hash"] for r in rows}) == 2
+
+
+def test_internal_read_raises_rather_than_reading_as_empty(monkeypatch) -> None:
+    """A broken query must not look like "nothing stored".
+
+    If it did, the hash guard above would find no match and write a version row
+    on every load — the unbounded growth would come back with nothing to see in
+    the logs.
+    """
+    store: dict[str, pa.Table] = {VERSION_TABLE_NAME: pa.Table.from_pylist([{"a": 1}])}
+
+    class BrokenApi(_make_fake_api_cls(store)):  # type: ignore[misc,valid-type]
+        def execute_sql(self, sql: str):
+            raise HotdataTerminalError("500: internal error")
+
+    monkeypatch.setattr(jc, "HotdataClient", BrokenApi)
+    client = HotdataJobClient(Schema("events"), _config(), hotdata().capabilities())
+
+    # Mapped to a dlt exception, not raw: dlt reads retryability off these.
+    with pytest.raises(DestinationTerminalException):
+        client.get_stored_schema()
+
+
+def test_internal_read_is_empty_while_a_table_awaits_its_first_load(monkeypatch) -> None:
+    """A declared-but-never-loaded table is an empty read, not a failure.
+
+    `initialize_storage` declares all three internal tables, so the first read of
+    a new database hits exactly this state. The server does not word it as a
+    missing relation, so the marker list cannot catch it — the sync probe does.
+    Getting this wrong fails the first load against every new database.
+    """
+    store: dict[str, pa.Table] = {}
+    # Verbatim from the API for a declared, unsynced managed table.
+    message = (
+        "400: Bad Request — {\"error\":{\"code\":\"BAD_REQUEST\",\"message\":\"Managed table "
+        "'default.public._dlt_version' is declared but has no data; POST a load "
+        "before querying\"}}"
+    )
+    assert not any(m in message.lower() for m in UNDEFINED_RELATION_MARKERS)
+
+    class DeclaredUnsyncedApi(_make_fake_api_cls(store)):  # type: ignore[misc,valid-type]
+        def execute_sql(self, sql: str):
+            raise HotdataTerminalError(message)
+
+        def list_managed_tables(self, *, schema):
+            return [SimpleNamespace(table=VERSION_TABLE_NAME, synced=False)]
+
+    monkeypatch.setattr(jc, "HotdataClient", DeclaredUnsyncedApi)
+    client = HotdataJobClient(Schema("events"), _config(), hotdata().capabilities())
+
+    assert client.get_stored_schema() is None
+    assert client.get_stored_schema_by_hash("whatever") is None
+
+
+def test_internal_read_is_empty_when_the_table_is_not_there_yet(monkeypatch) -> None:
+    store: dict[str, pa.Table] = {}
+
+    class MissingTableApi(_make_fake_api_cls(store)):  # type: ignore[misc,valid-type]
+        def execute_sql(self, sql: str):
+            raise HotdataTerminalError('table "_dlt_version" not found')
+
+    monkeypatch.setattr(jc, "HotdataClient", MissingTableApi)
+    client = HotdataJobClient(Schema("events"), _config(), hotdata().capabilities())
+
+    assert client.get_stored_schema() is None
+
+
+def test_complete_load_appends_a_single_row(monkeypatch) -> None:
+    """The row is appended, not merged into a re-upload of the whole table."""
+    store: dict[str, pa.Table] = {}
+    uploaded: list[tuple[str, str, int]] = []
+    base = _make_fake_api_cls(store)
+
+    class Recording(base):  # type: ignore[misc,valid-type]
+        def load_managed_table(self, table, *, schema, upload_id, mode="replace", key=None):
+            uploaded.append((table, mode, self._pending.num_rows))
+            return super().load_managed_table(
+                table, schema=schema, upload_id=upload_id, mode=mode, key=key
+            )
+
+    monkeypatch.setattr(jc, "HotdataClient", Recording)
+    client = HotdataJobClient(Schema("events"), _config(), hotdata().capabilities())
+
+    client.complete_load("load_1")
+    client.complete_load("load_2")
+
+    loads_writes = [u for u in uploaded if u[0] == LOADS_TABLE_NAME]
+    assert loads_writes == [
+        (LOADS_TABLE_NAME, "append", 1),
+        (LOADS_TABLE_NAME, "append", 1),
+    ]
+    assert [r["load_id"] for r in store[LOADS_TABLE_NAME].to_pylist()] == [
+        "load_1",
+        "load_2",
+    ]
+
+
+def test_state_pruning_keeps_the_newest_rows(monkeypatch) -> None:
+    def _state_row(n: int) -> dict:
+        return {
+            "version": n,
+            "engine_version": 1,
+            "pipeline_name": "events",
+            "state": f"s{n}",
+            "created_at": datetime(2024, 1, n, tzinfo=UTC),
+            "version_hash": f"h{n}",
+            "_dlt_load_id": f"load_{n}",
+            "_dlt_id": f"id_{n}",
+        }
+
+    store: dict[str, pa.Table] = {
+        PIPELINE_STATE_TABLE_NAME: pa.Table.from_pylist([_state_row(n) for n in range(1, 6)])
+    }
+    client = _client(store, monkeypatch, max_state_files=2)
+
+    client.complete_load("load_5")
+
+    kept = store[PIPELINE_STATE_TABLE_NAME].to_pylist()
+    assert sorted(r["_dlt_id"] for r in kept) == ["id_4", "id_5"]
+
+
+def test_state_pruning_is_off_when_max_state_files_is_zero(monkeypatch) -> None:
+    def _state_row(n: int) -> dict:
+        return {
+            "version": n,
+            "engine_version": 1,
+            "pipeline_name": "events",
+            "state": f"s{n}",
+            "created_at": datetime(2024, 1, n, tzinfo=UTC),
+            "version_hash": f"h{n}",
+            "_dlt_load_id": f"load_{n}",
+            "_dlt_id": f"id_{n}",
+        }
+
+    store: dict[str, pa.Table] = {
+        PIPELINE_STATE_TABLE_NAME: pa.Table.from_pylist([_state_row(n) for n in range(1, 6)])
+    }
+    client = _client(store, monkeypatch, max_state_files=0)
+
+    client.complete_load("load_5")
+
+    assert len(store[PIPELINE_STATE_TABLE_NAME].to_pylist()) == 5
+
+
+def test_a_failed_prune_does_not_fail_the_load(monkeypatch) -> None:
+    """Retention runs after the load is already complete; it must not undo it."""
+    store: dict[str, pa.Table] = {}
+    base = _make_fake_api_cls(store)
+
+    class TrimRefused(base):  # type: ignore[misc,valid-type]
+        def load_managed_table(self, table, *, schema, upload_id, mode="replace", key=None):
+            if table == PIPELINE_STATE_TABLE_NAME:
+                raise HotdataTerminalError("500: refused")
+            return super().load_managed_table(
+                table, schema=schema, upload_id=upload_id, mode=mode, key=key
+            )
+
+    store[PIPELINE_STATE_TABLE_NAME] = pa.Table.from_pylist(
+        [
+            {
+                "version": n,
+                "engine_version": 1,
+                "pipeline_name": "events",
+                "state": f"s{n}",
+                "created_at": datetime(2024, 1, n, tzinfo=UTC),
+                "version_hash": f"h{n}",
+                "_dlt_load_id": f"load_{n}",
+                "_dlt_id": f"id_{n}",
+            }
+            for n in range(1, 6)
+        ]
+    )
+    monkeypatch.setattr(jc, "HotdataClient", TrimRefused)
+    client = HotdataJobClient(
+        Schema("events"), _config(max_state_files=2), hotdata().capabilities()
+    )
+
+    client.complete_load("load_5")
+
+    # The load row landed even though the trim could not run, and the state rows
+    # are left exactly as they were rather than half-rewritten.
+    assert [r["load_id"] for r in store[LOADS_TABLE_NAME].to_pylist()] == ["load_5"]
+    assert len(store[PIPELINE_STATE_TABLE_NAME].to_pylist()) == 5

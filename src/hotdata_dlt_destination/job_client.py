@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+from dlt.common import logger
 from dlt.common.destination import DestinationCapabilitiesContext
 from dlt.common.destination.client import (
     JobClientBase,
@@ -45,7 +46,11 @@ from hotdata_dlt_destination.configuration import (
     validate_credentials,
 )
 from hotdata_dlt_destination.contracts import TableContract
-from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransientError
+from hotdata_dlt_destination.errors import (
+    UNDEFINED_RELATION_MARKERS,
+    HotdataTerminalError,
+    HotdataTransientError,
+)
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 from hotdata_dlt_destination.layout import (
     LayoutError,
@@ -132,6 +137,29 @@ def _is_missing_key_error(exc: Exception) -> bool:
     return "no declared key" in str(exc).lower()
 
 
+def _is_missing_storage(exc: Exception) -> bool:
+    """Is this "there is nothing to read yet" rather than a query we got wrong?
+
+    Two ways storage can legitimately not be there on an early read: no instant
+    database has been resolved (the auto-create path reads during sync, before
+    the first load creates it), which surfaces as a mapped ``KeyError``; and the
+    table itself not being declared yet.
+
+    The distinction is load-bearing for the internal-table reads below. Every
+    other failure must surface: a query this code got wrong would otherwise read
+    as "no rows", and the guard that keeps `_dlt_version` from growing on every
+    load would silently stop guarding.
+    """
+    message = str(exc).lower()
+    node: BaseException | None = exc
+    while node is not None:
+        if isinstance(node, KeyError):
+            return True
+        message += " " + str(node).lower()
+        node = node.__cause__
+    return any(marker in message for marker in UNDEFINED_RELATION_MARKERS)
+
+
 @contextmanager
 def _hotdata_api(config: HotdataClientConfiguration) -> Iterator[HotdataClient]:
     validate_credentials(config)
@@ -192,8 +220,17 @@ def _upload_table(
     config: HotdataClientConfiguration,
     table_name: str,
     rows: list[dict[str, Any]],
+    *,
+    mode: str = "append",
+    key: list[str] | None = None,
 ) -> None:
-    """Write rows to a parquet file and upload them to the managed table."""
+    """Write rows to a parquet file and upload them to the managed table.
+
+    `append` is the default because the bookkeeping tables only ever gain rows.
+    It is retry-safe here: the upload is staged once, above the load, so a
+    retried load re-sends the same upload id and the server replays its receipt
+    instead of appending twice (hotdata-framework >= 0.13).
+    """
     from dlt.common.libs.pyarrow import pyarrow
 
     arrow_table = pyarrow.Table.from_pylist(rows)
@@ -204,6 +241,8 @@ def _upload_table(
             table_name,
             schema=config.schema,
             upload_id=upload_id,
+            mode=mode,
+            key=key,
         )
 
 
@@ -234,7 +273,6 @@ class HotdataLoadJob(RunnableLoadJob):
         is_insert_only = strategy == "insert-only"
 
         batch_table = pyarrow.parquet.read_table(self._file_path)
-        from dlt.common import logger
         logger.info(
             "load: %s <- %s (%s rows)",
             contract.table_name,
@@ -584,14 +622,16 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
             "inserted_at": now,
             "schema_version_hash": self.schema.version_hash,
         }
-        existing = self._fetch_internal_rows(LOADS_TABLE_NAME)
         try:
             with _hotdata_api(self.config) as api:
-                _upload_table(api, self.config, LOADS_TABLE_NAME, [*existing, new_row])
+                _upload_table(api, self.config, LOADS_TABLE_NAME, [new_row])
         except HotdataTransientError as exc:
             raise DestinationTransientException(str(exc)) from exc
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
+        # After the row that marks this load complete, so a pruned state row is
+        # never the one a concurrent reader would have resolved to.
+        self._prune_pipeline_state()
 
     def create_load_job(
         self,
@@ -603,42 +643,42 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         return HotdataLoadJob(file_path, self.config, table)
 
     def get_stored_schema(self, schema_name: str = None) -> StorageSchemaInfo | None:
-        rows = self._fetch_internal_rows(VERSION_TABLE_NAME)
+        where = f" WHERE schema_name = {self._lit(schema_name)}" if schema_name else ""
+        rows = self._query_internal_rows(
+            f"SELECT * FROM {self._internal_ref(VERSION_TABLE_NAME)}{where}"
+            f" ORDER BY inserted_at DESC LIMIT 1",
+            tables=(VERSION_TABLE_NAME,),
+        )
         if not rows:
             return None
-        if schema_name:
-            rows = [r for r in rows if r.get("schema_name") == schema_name]
-        if not rows:
-            return None
-        rows.sort(key=lambda r: r["inserted_at"], reverse=True)
         return StorageSchemaInfo.from_normalized_mapping(rows[0], self.schema.naming)
 
     def get_stored_schema_by_hash(self, version_hash: str) -> StorageSchemaInfo | None:
-        rows = self._fetch_internal_rows(VERSION_TABLE_NAME)
-        for row in rows:
-            if row.get("version_hash") == version_hash:
-                return StorageSchemaInfo.from_normalized_mapping(row, self.schema.naming)
-        return None
+        rows = self._query_internal_rows(
+            f"SELECT * FROM {self._internal_ref(VERSION_TABLE_NAME)}"
+            f" WHERE version_hash = {self._lit(version_hash)} LIMIT 1",
+            tables=(VERSION_TABLE_NAME,),
+        )
+        if not rows:
+            return None
+        return StorageSchemaInfo.from_normalized_mapping(rows[0], self.schema.naming)
 
     def get_stored_state(self, pipeline_name: str) -> StateInfo | None:
-        state_rows = self._fetch_internal_rows(PIPELINE_STATE_TABLE_NAME)
-        loads_rows = self._fetch_internal_rows(LOADS_TABLE_NAME)
-        if not state_rows or not loads_rows:
+        # Only a state row whose load actually completed counts, so the join to
+        # _dlt_loads is what makes the newest row the newest *usable* one.
+        # load_id is a monotonically increasing timestamp string, so ordering it
+        # descending is ordering by recency.
+        rows = self._query_internal_rows(
+            f"SELECT s.* FROM {self._internal_ref(PIPELINE_STATE_TABLE_NAME)} AS s"
+            f" JOIN {self._internal_ref(LOADS_TABLE_NAME)} AS l"
+            f" ON l.load_id = s._dlt_load_id"
+            f" WHERE s.pipeline_name = {self._lit(pipeline_name)} AND l.status = 0"
+            f" ORDER BY s._dlt_load_id DESC LIMIT 1",
+            tables=(PIPELINE_STATE_TABLE_NAME, LOADS_TABLE_NAME),
+        )
+        if not rows:
             return None
-
-        completed_load_ids = {r["load_id"] for r in loads_rows if r.get("status") == 0}
-        matching = [
-            r
-            for r in state_rows
-            if r.get("pipeline_name") == pipeline_name
-            and r.get("_dlt_load_id") in completed_load_ids
-        ]
-        if not matching:
-            return None
-
-        # load_id is a monotonically increasing timestamp string -- sort descending
-        matching.sort(key=lambda r: r["_dlt_load_id"], reverse=True)
-        return StateInfo.from_normalized_mapping(matching[0], self.schema.naming)
+        return StateInfo.from_normalized_mapping(rows[0], self.schema.naming)
 
     def __enter__(self) -> HotdataJobClient:
         return self
@@ -651,34 +691,193 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
     ) -> None:
         pass
 
-    def _fetch_internal_rows(self, table_name: str) -> list[dict[str, Any]]:
+    def _internal_ref(self, table_name: str) -> str:
+        """Fully-qualified reference to an internal table, for pushdown SQL."""
+        return f'"default"."{self.config.schema}"."{table_name}"'
+
+    def _lit(self, value: Any) -> str:
+        return self.capabilities.escape_literal(value)
+
+    def _query_internal_rows(self, sql: str, *, tables: tuple[str, ...]) -> list[dict[str, Any]]:
+        """Run a pushdown query over the internal tables named in `tables`.
+
+        These tables are read on every load and grow one row per load, so the
+        predicate has to run server-side: fetching them whole and filtering here
+        makes the cost of a load scale with the number of loads before it.
+
+        "Nothing stored yet" has to be told apart from a query this code got
+        wrong, because reading a real failure as "no rows" is what would let the
+        guard in _write_schema_to_storage quietly stop guarding. A table that is
+        declared but never loaded is one of those legitimate empties, and the
+        server reports it in its own words rather than as a missing relation --
+        initialize_storage declares all three internal tables, so the first read
+        of a new database lands in exactly that state. Rather than matching more
+        phrasing, ask; the probe runs only on the error path, so a query that
+        succeeds pays nothing for it.
+        """
         with _hotdata_api(self.config) as api:
             try:
-                table = api.fetch_table(
-                    schema=self.config.schema,
-                    table=table_name,
-                )
-                return table.to_pylist() if table is not None else []
-            except (KeyError, HotdataTerminalError):
-                return []
+                table = api.execute_sql(sql)
+            except (KeyError, HotdataTerminalError, HotdataTransientError) as exc:
+                if _is_missing_storage(exc) or self._awaiting_first_load(api, tables):
+                    return []
+                # dlt reads retryability off these two exceptions, and a raw
+                # framework error reaching it unclassified aborts a run that a
+                # retry would have carried.
+                if isinstance(exc, HotdataTransientError):
+                    raise DestinationTransientException(str(exc)) from exc
+                raise DestinationTerminalException(str(exc)) from exc
+            return table.to_pylist() if table is not None else []
+
+    def _awaiting_first_load(self, api: HotdataClient, tables: tuple[str, ...]) -> bool:
+        """Is any of `tables` declared but not yet holding data?
+
+        Such a table cannot be queried, and for the internal tables that means
+        the same thing as an empty result. A table absent from the listing
+        counts as well -- there is nothing to read there either.
+        """
+        try:
+            synced = {
+                managed.table: managed.synced
+                for managed in api.list_managed_tables(schema=self.config.schema)
+            }
+        except (KeyError, HotdataTerminalError, HotdataTransientError):
+            # Cannot tell; leave the original error to be raised.
+            return False
+        return any(not synced.get(name, False) for name in tables)
 
     def _write_schema_to_storage(self) -> None:
+        """Store the current schema, unless this exact schema is already stored.
+
+        One row per distinct schema, not one per load. The hash is the identity
+        of the schema, so a row for it already present means there is nothing new
+        to record — writing anyway is what made this table grow without bound,
+        and every row carries a full copy of the schema JSON.
+
+        `force` deliberately does not reach here: dlt re-applies DDL under force
+        but still declines to write a duplicate version row (see
+        SqlJobClientBase.update_stored_schema and the filesystem destination),
+        and this destination does no DDL in update_stored_schema at all.
+        """
+        # The hash to look up has to be the one about to be WRITTEN: to_dict()
+        # recomputes the hash for a schema modified since it was loaded, without
+        # updating Schema.stored_version_hash, so the two can disagree. Reading
+        # one and writing the other would make the guard silently never match.
         schema_dict = self.schema.to_dict()
-        schema_str = json.dumps(schema_dict)
-        now = datetime.now(UTC)
+        if self.get_stored_schema_by_hash(schema_dict["version_hash"]) is not None:
+            return
+
         new_row: dict[str, Any] = {
             "version": schema_dict["version"],
             "engine_version": schema_dict["engine_version"],
-            "inserted_at": now,
+            "inserted_at": datetime.now(UTC),
             "schema_name": schema_dict["name"],
             "version_hash": schema_dict["version_hash"],
-            "schema": schema_str,
+            "schema": json.dumps(schema_dict),
         }
-        existing = self._fetch_internal_rows(VERSION_TABLE_NAME)
         try:
             with _hotdata_api(self.config) as api:
-                _upload_table(api, self.config, VERSION_TABLE_NAME, [*existing, new_row])
+                _upload_table(api, self.config, VERSION_TABLE_NAME, [new_row])
         except HotdataTransientError as exc:
             raise DestinationTransientException(str(exc)) from exc
         except HotdataTerminalError as exc:
             raise DestinationTerminalException(str(exc)) from exc
+
+    def _prune_pipeline_state(self) -> None:
+        """Trim `_dlt_pipeline_state` to the newest `max_state_files` per pipeline.
+
+        An incremental pipeline writes a state row per run and only the newest
+        completed one is ever read, so the rest accumulate forever. Mirrors the
+        filesystem destination's max_state_files cleanup.
+
+        Retention keeps the newest rows PER PIPELINE, not for the current one
+        only: several pipelines can share a dataset, and `complete_load` does not
+        know which pipeline it is running for (only `get_stored_state` is told).
+        Grouping is what makes that safe — every pipeline keeps its own newest
+        rows no matter which one triggers the trim.
+
+        Rewrites the table with the rows to keep rather than issuing a keyed
+        delete. A delete would have to match on `_dlt_id` via the per-load key,
+        because internal tables are declared without one (see _table_keys), and
+        if a server ignored that key the match would degenerate to "every row" —
+        emptying the table, losing every incremental cursor and re-ingesting
+        every source from scratch. A rewrite cannot fail that way.
+
+        Two consequences of the rewrite worth knowing. It is amortised: it only
+        fires once the slack is a full retention window, so it runs about once
+        every `max_state_files` loads rather than on every load. And it is not
+        atomic against a concurrent writer — a state row appended by another
+        pipeline between the read and the rewrite would be dropped, costing that
+        pipeline one run's cursor advance (dlt re-reads state from the newest
+        remaining row, so this is a repeated load, not corruption).
+
+        Housekeeping: this runs after the load is already complete, so a failure
+        to trim must never fail the load.
+        """
+        keep = self.config.max_state_files
+        if keep < 1:
+            return
+        state_ref = self._internal_ref(PIPELINE_STATE_TABLE_NAME)
+        try:
+            # Decide on three narrow columns. This runs on every load, and a state
+            # row carries the whole compressed state, so reading those is deferred
+            # to the loads that actually rewrite.
+            index = self._query_internal_rows(
+                f"SELECT _dlt_id, _dlt_load_id, pipeline_name FROM {state_ref}",
+                tables=(PIPELINE_STATE_TABLE_NAME,),
+            )
+        except (DestinationTerminalException, DestinationTransientException) as exc:
+            logger.warning("hotdata: could not read %s to trim it: %s", state_ref, exc)
+            return
+        if len(index) <= keep:
+            return
+
+        keep_ids: set[Any] = set()
+        by_pipeline: dict[Any, list[dict[str, Any]]] = {}
+        for row in index:
+            by_pipeline.setdefault(row.get("pipeline_name"), []).append(row)
+        for pipeline_rows in by_pipeline.values():
+            # load_id is a monotonically increasing timestamp string, so ordering
+            # it descending is ordering by recency.
+            pipeline_rows.sort(key=lambda r: r["_dlt_load_id"], reverse=True)
+            keep_ids.update(r["_dlt_id"] for r in pipeline_rows[:keep])
+        dropped = len(index) - len(keep_ids)
+        if dropped < keep:
+            return
+
+        try:
+            rows = self._query_internal_rows(
+                f"SELECT * FROM {state_ref}", tables=(PIPELINE_STATE_TABLE_NAME,)
+            )
+            kept = [r for r in rows if r["_dlt_id"] in keep_ids]
+            if not kept or len(kept) == len(rows):
+                # The table moved between the two reads (a concurrent load). Doing
+                # nothing is always safe here; the next load re-evaluates.
+                return
+            with _hotdata_api(self.config) as api:
+                _upload_table(
+                    api,
+                    self.config,
+                    PIPELINE_STATE_TABLE_NAME,
+                    kept,
+                    mode="replace",
+                )
+        except (
+            HotdataTerminalError,
+            HotdataTransientError,
+            DestinationTerminalException,
+            DestinationTransientException,
+        ) as exc:
+            logger.warning(
+                "hotdata: could not trim %s (%d stale row(s) left in place): %s",
+                PIPELINE_STATE_TABLE_NAME,
+                dropped,
+                exc,
+            )
+            return
+        logger.info(
+            "hotdata: trimmed %s, dropped %d stale row(s), keeping the newest %d per pipeline",
+            PIPELINE_STATE_TABLE_NAME,
+            dropped,
+            keep,
+        )

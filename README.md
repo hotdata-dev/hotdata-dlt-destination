@@ -369,6 +369,7 @@ Notes:
 | `api_base_url` | `HOTDATA_API_BASE_URL` | `https://api.hotdata.dev` | Hotdata API endpoint |
 | `max_retries` | `HOTDATA_MAX_RETRIES` | `8` | How many times to retry a failed request |
 | `retry_backoff_seconds` | `HOTDATA_RETRY_BACKOFF_SECONDS` | `1.5` | Initial wait between retries (grows linearly with each attempt) |
+| `max_state_files` | `DESTINATION__HOTDATA__MAX_STATE_FILES` | `100` | How many `_dlt_pipeline_state` rows to keep per pipeline. Only the newest is ever read; older rows are trimmed. Set `0` to keep every row |
 
 Pass these as keyword arguments to `hotdata(...)`. The `api_key` is the exception — being a secret, it's read from `HOTDATA_API_KEY` (or supplied via `credentials=`, e.g. `hotdata(credentials={"api_key": "..."}, ...)`); `workspace_id` has no environment variable. `hotdata` also accepts:
 

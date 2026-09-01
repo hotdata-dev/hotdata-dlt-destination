@@ -30,7 +30,11 @@ from dlt.destinations.sql_client import (
 from dlt.destinations.typing import DBApi, DBTransaction
 
 from hotdata_dlt_destination.configuration import validate_credentials
-from hotdata_dlt_destination.errors import HotdataTerminalError, HotdataTransientError
+from hotdata_dlt_destination.errors import (
+    UNDEFINED_RELATION_MARKERS,
+    HotdataTerminalError,
+    HotdataTransientError,
+)
 from hotdata_dlt_destination.hotdata_client import HotdataClient
 
 if TYPE_CHECKING:
@@ -39,17 +43,6 @@ if TYPE_CHECKING:
     from dlt.common.destination.dataset import DBApiCursor
 
     from hotdata_dlt_destination.configuration import HotdataClientConfiguration
-
-# Substrings that identify a "table/relation does not exist" error across the
-# Postgres surface DataFusion presents (matched case-insensitively).
-_UNDEFINED_RELATION_MARKERS = (
-    "not found",
-    "does not exist",
-    "no such table",
-    "no table named",
-    "unknown table",
-    "undefined table",
-)
 
 
 def _chain_messages(ex: Exception, limit: int = 6) -> str:
@@ -223,7 +216,7 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
         ):
             return ex
         message = _chain_messages(ex)
-        if any(marker in message for marker in _UNDEFINED_RELATION_MARKERS):
+        if any(marker in message for marker in UNDEFINED_RELATION_MARKERS):
             return DatabaseUndefinedRelation(ex)
         if isinstance(ex, HotdataTransientError):
             return DatabaseTransientException(ex)

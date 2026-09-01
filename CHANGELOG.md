@@ -15,24 +15,31 @@ Changelog style — terse "bullet + brief why":
   (the git history holds those). These notes are for a reader deciding whether
   to upgrade.
 - Prefer one bullet with semicolon-joined clauses over nested sub-bullets.
+- HARD CAP: three lines per bullet. If it needs more, it belongs in the commit
+  message or the PR, not here.
 - Group under ### Added / Changed / Fixed / Removed. Mark breaking changes
   **Breaking:**. See the released entries below for the target density.
 -->
 
+### Added
+
+- `max_state_files` (default 100) trims `_dlt_pipeline_state` to the newest N rows
+  per pipeline; 0 keeps every row.
+
+### Changed
+
+- Bookkeeping tables are appended to and read with a pushed-down predicate rather
+  than fetched and rewritten whole on every load; `_dlt_version` gains a row only
+  when the schema hash changes, so per-load cost no longer grows with load count.
+
 ### Fixed
 
-- `HotdataSourceClient` now defines its own `_poll` rather than inheriting one from
-  `ManagedDatabaseClient`, which no longer provides it: the framework's managed
-  client waits on the query run instead of on the result body, and dropped the
-  shared helper with it. Both readiness waits here would otherwise raise
-  `AttributeError` on the next `hotdata-framework` release this pin accepts. The
-  local copy treats `interrupted` as terminal — it was absent, so an interrupted
-  run waited out the full 300s bound and then reported a timeout — and drops
-  `cancelled`, which this API does not send; an unrecognised status keeps waiting
-  and the timeout names it. The wait reads its own `_POLL_TIMEOUT_SECONDS` /
-  `_POLL_SLEEP_SECONDS` rather than the base class's constants, so it rents
-  nothing -- and under distinct names, which avoids shadowing the base values for
-  inherited waits.
+- A failed read of `_dlt_version` or `_dlt_loads` no longer replaces the table with
+  a single row, discarding load and schema history and leaving `get_stored_state`
+  with no completed load to match.
+- `HotdataSourceClient` owns its `_poll` and poll constants instead of inheriting
+  them from `ManagedDatabaseClient`, which no longer provides them; `interrupted` is
+  now terminal, and an unknown status keeps waiting and is named in the timeout.
 
 ## [0.15.0] - 2026-08-27
 
