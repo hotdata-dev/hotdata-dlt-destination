@@ -138,7 +138,8 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
 
     A dlt "dataset" maps to the Hotdata **schema**; the managed **database** is a
     separate scoping dimension passed out-of-band on each query (not in the SQL).
-    Table references qualify as ``"default"."<schema>"."<table>"``.
+    Table references qualify as ``"<catalog>"."<schema>"."<table>"``, where the
+    catalog is the database's own (``default`` unless overridden at create time).
     """
 
     dbapi: ClassVar[DBApi] = None
@@ -227,8 +228,9 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
     # --- overridden concrete methods -------------------------------------
 
     def catalog_name(self, quote: bool = True, casefold: bool = True) -> str | None:
-        # Hotdata's catalog is always "default"; drives default.public.<table>.
-        catalog = "default"
+        # The database's own catalog answers to "default" only when it was created
+        # without a catalog override, so take the resolved name when there is one.
+        catalog = self._client.catalog if self._client is not None else "default"
         if casefold:
             catalog = self.capabilities.casefold_identifier(catalog)
         if quote:

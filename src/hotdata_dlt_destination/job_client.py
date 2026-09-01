@@ -12,7 +12,7 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import TracebackType
@@ -135,6 +135,24 @@ def _table_keys(*, schema: Schema, database_name: str, schema_name: str) -> dict
 def _is_missing_key_error(exc: Exception) -> bool:
     # No typed error crosses the HTTP boundary, so match the server's phrase.
     return "no declared key" in str(exc).lower()
+
+
+def _sql_literal(value: str) -> str:
+    """A standard single-quoted SQL string literal.
+
+    Deliberately not ``capabilities.escape_literal``: that one is Postgres's and
+    emits the ``E'...'`` form, which this engine's parser rejects outright --
+    "Expected: an expression, found: E'...'". No test double catches that,
+    because datafusion-python accepts ``E'...'`` where the server does not, so
+    the escaping has to be right by construction here.
+
+    Doubling the quote is the whole job: the engine treats strings as
+    standard-conforming, so a backslash is a literal backslash and carries no
+    escape meaning (verified against the API).
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"SQL literal must be a str, got {type(value).__name__}")
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _is_missing_storage(exc: Exception) -> bool:
@@ -645,8 +663,10 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
     def get_stored_schema(self, schema_name: str = None) -> StorageSchemaInfo | None:
         where = f" WHERE schema_name = {self._lit(schema_name)}" if schema_name else ""
         rows = self._query_internal_rows(
-            f"SELECT * FROM {self._internal_ref(VERSION_TABLE_NAME)}{where}"
-            f" ORDER BY inserted_at DESC LIMIT 1",
+            lambda ref: (
+                f"SELECT * FROM {ref(VERSION_TABLE_NAME)}{where}"
+                f" ORDER BY inserted_at DESC LIMIT 1"
+            ),
             tables=(VERSION_TABLE_NAME,),
         )
         if not rows:
@@ -655,8 +675,10 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
 
     def get_stored_schema_by_hash(self, version_hash: str) -> StorageSchemaInfo | None:
         rows = self._query_internal_rows(
-            f"SELECT * FROM {self._internal_ref(VERSION_TABLE_NAME)}"
-            f" WHERE version_hash = {self._lit(version_hash)} LIMIT 1",
+            lambda ref: (
+                f"SELECT * FROM {ref(VERSION_TABLE_NAME)}"
+                f" WHERE version_hash = {self._lit(version_hash)} LIMIT 1"
+            ),
             tables=(VERSION_TABLE_NAME,),
         )
         if not rows:
@@ -669,11 +691,13 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         # load_id is a monotonically increasing timestamp string, so ordering it
         # descending is ordering by recency.
         rows = self._query_internal_rows(
-            f"SELECT s.* FROM {self._internal_ref(PIPELINE_STATE_TABLE_NAME)} AS s"
-            f" JOIN {self._internal_ref(LOADS_TABLE_NAME)} AS l"
-            f" ON l.load_id = s._dlt_load_id"
-            f" WHERE s.pipeline_name = {self._lit(pipeline_name)} AND l.status = 0"
-            f" ORDER BY s._dlt_load_id DESC LIMIT 1",
+            lambda ref: (
+                f"SELECT s.* FROM {ref(PIPELINE_STATE_TABLE_NAME)} AS s"
+                f" JOIN {ref(LOADS_TABLE_NAME)} AS l"
+                f" ON l.load_id = s._dlt_load_id"
+                f" WHERE s.pipeline_name = {self._lit(pipeline_name)} AND l.status = 0"
+                f" ORDER BY s._dlt_load_id DESC LIMIT 1"
+            ),
             tables=(PIPELINE_STATE_TABLE_NAME, LOADS_TABLE_NAME),
         )
         if not rows:
@@ -691,15 +715,30 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
     ) -> None:
         pass
 
-    def _internal_ref(self, table_name: str) -> str:
-        """Fully-qualified reference to an internal table, for pushdown SQL."""
-        return f'"default"."{self.config.schema}"."{table_name}"'
+    def _internal_ref(self, table_name: str, *, catalog: str) -> str:
+        """Fully-qualified reference to an internal table, for pushdown SQL.
 
-    def _lit(self, value: Any) -> str:
-        return self.capabilities.escape_literal(value)
+        The catalog is the resolved one rather than a literal `default`: a
+        database created with a catalog override does not answer to `default`,
+        and every reference against it fails to resolve.
+        """
+        return f'"{catalog}"."{self.config.schema}"."{table_name}"'
 
-    def _query_internal_rows(self, sql: str, *, tables: tuple[str, ...]) -> list[dict[str, Any]]:
+    def _lit(self, value: str) -> str:
+        return _sql_literal(value)
+
+    def _query_internal_rows(
+        self,
+        build_sql: Callable[[Callable[[str], str]], str],
+        *,
+        tables: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
         """Run a pushdown query over the internal tables named in `tables`.
+
+        The SQL arrives as a builder rather than a string because every table
+        reference has to be qualified with the database's own catalog, and that
+        is only known once the database is resolved -- which happens here, not in
+        the caller. `build_sql` receives a `ref(table_name)` bound to it.
 
         These tables are read on every load and grow one row per load, so the
         predicate has to run server-side: fetching them whole and filtering here
@@ -717,6 +756,12 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         """
         with _hotdata_api(self.config) as api:
             try:
+                # Inside the try: resolving the catalog reaches the API, and a run
+                # with no database resolved yet raises the same KeyError that means
+                # "nothing stored".
+                sql = build_sql(
+                    lambda table_name: self._internal_ref(table_name, catalog=api.catalog)
+                )
                 table = api.execute_sql(sql)
             except (KeyError, HotdataTerminalError, HotdataTransientError) as exc:
                 if _is_missing_storage(exc) or self._awaiting_first_load(api, tables):
@@ -817,13 +862,16 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
         keep = self.config.max_state_files
         if keep < 1:
             return
-        state_ref = self._internal_ref(PIPELINE_STATE_TABLE_NAME)
+        state_ref = f"{PIPELINE_STATE_TABLE_NAME!r} in the instant database"
         try:
             # Decide on three narrow columns. This runs on every load, and a state
             # row carries the whole compressed state, so reading those is deferred
             # to the loads that actually rewrite.
             index = self._query_internal_rows(
-                f"SELECT _dlt_id, _dlt_load_id, pipeline_name FROM {state_ref}",
+                lambda ref: (
+                    "SELECT _dlt_id, _dlt_load_id, pipeline_name FROM "
+                    f"{ref(PIPELINE_STATE_TABLE_NAME)}"
+                ),
                 tables=(PIPELINE_STATE_TABLE_NAME,),
             )
         except (DestinationTerminalException, DestinationTransientException) as exc:
@@ -847,7 +895,8 @@ class HotdataJobClient(JobClientBase, WithStateSync, WithSqlClient):
 
         try:
             rows = self._query_internal_rows(
-                f"SELECT * FROM {state_ref}", tables=(PIPELINE_STATE_TABLE_NAME,)
+                lambda ref: f"SELECT * FROM {ref(PIPELINE_STATE_TABLE_NAME)}",
+                tables=(PIPELINE_STATE_TABLE_NAME,),
             )
             kept = [r for r in rows if r["_dlt_id"] in keep_ids]
             if not kept or len(kept) == len(rows):

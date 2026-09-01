@@ -34,6 +34,8 @@ _MISSING = object()
 class FakeHotdataClient:
     """Stands in for HotdataClient on the read path."""
 
+    catalog = "default"
+
     def __init__(self, table: pa.Table | None = None, tables: object = _MISSING) -> None:
         self._table = table if table is not None else CANNED
         # tables=None explicitly models a missing database (list raises).

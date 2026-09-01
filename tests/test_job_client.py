@@ -30,6 +30,10 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
     """
 
     class FakeApi:
+        # A database created without a catalog override answers to "default".
+        # test_internal_ref_uses_the_databases_own_catalog covers the override.
+        catalog = "default"
+
         def __init__(self, **_kwargs: object) -> None:
             self._pending: pa.Table | None = None
 
@@ -69,8 +73,10 @@ def _make_fake_api_cls(store: dict[str, pa.Table]):
                     pa.RecordBatch.from_pylist([], schema=tbl.schema)
                 ]
                 ctx.register_record_batches(name, [batches])
-            # Strip the "default"."<schema>". qualifier so bare names resolve.
-            rewritten = re.sub(r'"default"\."[^"]+"\.(?=")', "", sql)
+            # Strip the "<catalog>"."<schema>". qualifier so bare names resolve.
+            # Any catalog, not just "default": a database created with an override
+            # answers to that name instead.
+            rewritten = re.sub(r'"[^"]+"\."[^"]+"\.(?=")', "", sql)
             try:
                 return ctx.sql(rewritten).to_arrow_table()
             except Exception as exc:
@@ -1083,3 +1089,125 @@ def test_a_failed_prune_does_not_fail_the_load(monkeypatch) -> None:
     # are left exactly as they were rather than half-rewritten.
     assert [r["load_id"] for r in store[LOADS_TABLE_NAME].to_pylist()] == ["load_5"]
     assert len(store[PIPELINE_STATE_TABLE_NAME].to_pylist()) == 5
+
+
+def test_internal_reads_use_the_databases_own_catalog(monkeypatch) -> None:
+    """A database created with a catalog override does not answer to `default`.
+
+    Every qualified reference against such a database fails to resolve, and the
+    read error used to be swallowed into "no rows" — which turned each bookkeeping
+    write into a single-row replace and discarded the history.
+    """
+    store: dict[str, pa.Table] = {
+        VERSION_TABLE_NAME: pa.Table.from_pylist(
+            [
+                {
+                    "version": 1,
+                    "engine_version": 1,
+                    "inserted_at": datetime(2024, 1, 1, tzinfo=UTC),
+                    "schema_name": "events",
+                    "version_hash": "h1",
+                    "schema": "{}",
+                }
+            ]
+        )
+    }
+    seen: list[str] = []
+    base = _make_fake_api_cls(store)
+
+    class OverriddenCatalog(base):  # type: ignore[misc,valid-type]
+        catalog = "mqtt_tf2"
+
+        def execute_sql(self, sql: str):
+            seen.append(sql)
+            # Only the real catalog resolves; `default` is what the server rejects.
+            if '"default"' in sql:
+                raise HotdataTerminalError(
+                    "table 'default.public._dlt_version' not found"
+                )
+            return super().execute_sql(sql)
+
+    monkeypatch.setattr(jc, "HotdataClient", OverriddenCatalog)
+    client = HotdataJobClient(Schema("events"), _config(), hotdata().capabilities())
+
+    info = client.get_stored_schema()
+
+    assert info is not None and info.version_hash == "h1"
+    assert seen and all('"mqtt_tf2"."public"' in s for s in seen), seen
+    assert not any('"default"."public"' in s for s in seen)
+
+
+def test_the_state_trim_also_qualifies_with_the_real_catalog(monkeypatch) -> None:
+    seen: list[str] = []
+    base = _make_fake_api_cls({})
+
+    class OverriddenCatalog(base):  # type: ignore[misc,valid-type]
+        catalog = "mqtt_tf2"
+
+        def execute_sql(self, sql: str):
+            seen.append(sql)
+            return super().execute_sql(sql)
+
+    monkeypatch.setattr(jc, "HotdataClient", OverriddenCatalog)
+    client = HotdataJobClient(
+        Schema("events"), _config(max_state_files=2), hotdata().capabilities()
+    )
+
+    client.complete_load("load_1")
+
+    trim_reads = [s for s in seen if PIPELINE_STATE_TABLE_NAME in s]
+    assert trim_reads
+    assert all('"mqtt_tf2"."public"' in s for s in trim_reads), trim_reads
+
+
+# --- SQL literals -------------------------------------------------------------
+#
+# These pin the FORM, not just the behaviour, because no test double can catch a
+# wrong one: datafusion-python accepts Postgres's `E'...'` literals, the instant
+# database's parser rejects them ("Expected: an expression, found: E'...'"). A
+# wrong literal here fails every load and passes every e2e test.
+
+
+def test_sql_literal_is_a_plain_quoted_string_not_the_postgres_e_form() -> None:
+    assert jc._sql_literal("events") == "'events'"
+    assert not jc._sql_literal("events").startswith("E")
+    # ...and it is NOT what dlt's postgres escaper would produce.
+    assert jc._sql_literal("events") != hotdata().capabilities().escape_literal("events")
+
+
+def test_sql_literal_doubles_embedded_quotes() -> None:
+    assert jc._sql_literal("it's") == "'it''s'"
+    assert jc._sql_literal("a'b'c") == "'a''b''c'"
+    # A backslash carries no escape meaning in this engine, so it passes through.
+    assert jc._sql_literal("back\\slash") == "'back\\slash'"
+
+
+def test_sql_literal_refuses_a_non_string() -> None:
+    # Every call site passes a schema name, version hash or pipeline name. A
+    # silent str() of something else is how a literal stops being escaped.
+    for bad in (1, None, ["events"]):
+        with pytest.raises(TypeError):
+            jc._sql_literal(bad)
+
+
+def test_read_predicates_carry_plain_literals(monkeypatch) -> None:
+    seen: list[str] = []
+    base = _make_fake_api_cls({})
+
+    class Recording(base):  # type: ignore[misc,valid-type]
+        def execute_sql(self, sql: str):
+            seen.append(sql)
+            return super().execute_sql(sql)
+
+    monkeypatch.setattr(jc, "HotdataClient", Recording)
+    client = HotdataJobClient(Schema("events"), _config(), hotdata().capabilities())
+
+    client.get_stored_schema("events")
+    client.get_stored_schema_by_hash("h1")
+    client.get_stored_state("p_1")
+
+    assert len(seen) == 3
+    assert not any("E'" in s for s in seen), seen
+    assert "'events'" in seen[0]
+    assert "'h1'" in seen[1]
+    assert "'p_1'" in seen[2]
