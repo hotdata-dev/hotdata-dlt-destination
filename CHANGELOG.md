@@ -21,6 +21,8 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+## [0.16.0] - 2026-09-01
+
 ### Added
 
 - `max_state_files` (default 100) trims `_dlt_pipeline_state` to the newest N rows
