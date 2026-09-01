@@ -44,6 +44,9 @@ class InMemoryBackend:
         # (db, schema, table) -> (partition_by, sorted_by) as declared at creation
         self.layouts: dict[tuple, tuple[list, list]] = {}
         self.tables: dict[tuple, pa.Table] = {}
+        # The id minted by the most recent query, so the query-run fake can name
+        # the result the run produced.
+        self.last_result_id: str | None = None
         self.uploads: dict[str, pa.Table] = {}
         self.results: dict[str, pa.Table] = {}
         self.load_counts: dict[tuple, int] = {}
@@ -210,6 +213,10 @@ class _FakeQueryApi:
         be = _ACTIVE["backend"]
         database = be.id_to_name[x_database_id]
         result = be.execute_sql(database, request.sql)
+        # The run is what names the result now, so the id has to be reachable
+        # from the run fake as well as from this reply.
+        rid = be.store_result(result)
+        be.last_result_id = rid
         return QueryResponse(
             columns=[],
             rows=[],
@@ -217,18 +224,40 @@ class _FakeQueryApi:
             preview_row_count=0,
             truncated=False,
             nullable=[],
-            result_id=be.store_result(result),
+            result_id=rid,
             query_run_id="qr",
             execution_time_ms=1,
         )
 
 
 class _FakeResultsApi:
+    """Readiness, as frameworks up to 0.13 ask for it."""
+
     def __init__(self, api):
         pass
 
-    def get_result(self, result_id, *, x_database_id=None):
+    def get_result(self, result_id, *, x_database_id=None, limit=None):
         return SimpleNamespace(status="ready", result_id=result_id, error_message=None)
+
+
+class _FakeQueryRunsApi:
+    """Readiness, and the id of the result the run produced.
+
+    Later frameworks wait on the query run rather than polling the result body
+    for a status. Both fakes are installed so this suite works either side of
+    that change instead of binding to one framework version.
+    """
+
+    def __init__(self, api):
+        pass
+
+    def get_query_run(self, query_run_id, *, x_database_id=None):
+        return SimpleNamespace(
+            status="succeeded",
+            result_id=_ACTIVE["backend"].last_result_id,
+            error_message=None,
+            warning_message=None,
+        )
 
 
 class _FakeArrowResultsApi:
@@ -265,7 +294,10 @@ def backend(monkeypatch):
     be = InMemoryBackend()
     _ACTIVE["backend"] = be
     monkeypatch.setattr(mc, "QueryApi", _FakeQueryApi)
-    monkeypatch.setattr(mc, "ResultsApi", _FakeResultsApi)
+    monkeypatch.setattr(mc, "QueryRunsApi", _FakeQueryRunsApi)
+    # `raising=False`: later frameworks drop this import, having stopped reading
+    # a result body to learn its status.
+    monkeypatch.setattr(mc, "ResultsApi", _FakeResultsApi, raising=False)
     monkeypatch.setattr(mc, "ArrowResultsApi", _FakeArrowResultsApi)
     # hotdata_client.py also references ArrowResultsApi (for execute_sql) and
     # DatabasesApi (for the id-first bind).

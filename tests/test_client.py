@@ -292,7 +292,7 @@ def test_list_managed_tables_by_id(monkeypatch) -> None:
 def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool) -> dict:
     from hotdata.models.query_response import QueryResponse as _QR
 
-    scopes: dict[str, list] = {"result": [], "arrow": []}
+    scopes: dict[str, list] = {"run": [], "result": [], "arrow": []}
 
     class FakeQueryApi:
         def __init__(self, api):
@@ -311,11 +311,28 @@ def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool
                 execution_time_ms=1,
             )
 
+    # Which endpoint answers "is it ready?" depends on the installed framework:
+    # up to 0.13 it polls `GET /results/{id}`, after that it waits on the query
+    # run. Both are faked so this suite does not silently bind to one of them --
+    # the assertion below accepts whichever was used.
+    class FakeQueryRunsApi:
+        def __init__(self, api):
+            pass
+
+        def get_query_run(self, query_run_id, *, x_database_id=None):
+            scopes["run"].append(x_database_id)
+            return SimpleNamespace(
+                status="succeeded",
+                result_id="r1",
+                error_message=None,
+                warning_message=None,
+            )
+
     class FakeResultsApi:
         def __init__(self, api):
             pass
 
-        def get_result(self, result_id, *, x_database_id=None):
+        def get_result(self, result_id, *, x_database_id=None, limit=None):
             scopes["result"].append(x_database_id)
             return SimpleNamespace(status="ready", result_id=result_id, error_message=None)
 
@@ -328,7 +345,12 @@ def _patch_query_apis(monkeypatch, arrow_table, *, arrow_in_hotdata_client: bool
             return arrow_table
 
     monkeypatch.setattr("hotdata_framework.managed_client.QueryApi", FakeQueryApi)
-    monkeypatch.setattr("hotdata_framework.managed_client.ResultsApi", FakeResultsApi)
+    monkeypatch.setattr("hotdata_framework.managed_client.QueryRunsApi", FakeQueryRunsApi)
+    # `raising=False`: the symbol is gone from the module in later framework
+    # versions, which stop reading a result body to learn its status.
+    monkeypatch.setattr(
+        "hotdata_framework.managed_client.ResultsApi", FakeResultsApi, raising=False
+    )
     monkeypatch.setattr("hotdata_framework.managed_client.ArrowResultsApi", FakeArrowResultsApi)
     if arrow_in_hotdata_client:
         monkeypatch.setattr(
@@ -346,7 +368,7 @@ def test_execute_sql_carries_database_scope(monkeypatch) -> None:
     client = _client(_Runtime(), config=_cfg(database_id="db_99"))
     table = client.execute_sql('SELECT * FROM "default"."public"."spans"')
     assert table.num_rows == 2
-    assert scopes["result"] == ["db_99"]
+    assert (scopes["run"] or scopes["result"]) == ["db_99"]
     assert scopes["arrow"] == ["db_99"]
     client.close()
 
@@ -360,7 +382,7 @@ def test_fetch_table_carries_database_scope(monkeypatch) -> None:
     client = _client(rt, config=_cfg(database_id="db_42"))
     table = client.fetch_table(schema="public", table="orders")
     assert table is not None and table.num_rows == 1
-    assert scopes["result"] == ["db_42"]
+    assert (scopes["run"] or scopes["result"]) == ["db_42"]
     assert scopes["arrow"] == ["db_42"]
     client.close()
 

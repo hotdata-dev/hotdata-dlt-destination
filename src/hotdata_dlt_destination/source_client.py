@@ -44,13 +44,14 @@ Arrow methods, which cannot use it, are the slower pair. Where the body cannot b
 trusted the persisted result is taken regardless of cost: slower and complete
 beats faster and silently short.
 The count is a second request rather than folded into the readiness poll because
-the poll lives in the shared client, and duplicating its sync/async branching to
-save ~12% of the latency would risk the two drifting.
+the poll would then have to branch on sync/async the way the read above it does,
+and duplicating that to save ~12% of the latency would risk the two drifting.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, TypeVar
+import time
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import pyarrow as pa
 import pyarrow.types as pat
@@ -64,7 +65,7 @@ from hotdata.models.query_response import QueryResponse
 from hotdata_framework.managed_client import ManagedDatabaseClient
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 # Rows per Arrow batch handed to dlt. Bounds peak memory for one batch; it does
 # not bound the query, whose size the caller controls with its own LIMIT.
@@ -73,6 +74,16 @@ DEFAULT_BATCH_ROWS = 50_000
 # Table and RecordBatch both carry `.schema` and `.cast`, and the normaliser
 # returns whichever it was given.
 T = TypeVar("T", pa.Table, pa.RecordBatch)
+
+
+class _HasStatus(Protocol):
+    """What `_poll` needs off a run or a result: a status, and a reason."""
+
+    status: str
+    error_message: str | None
+
+
+_S = TypeVar("_S", bound=_HasStatus)
 
 
 class IncompleteReadError(RuntimeError):
@@ -320,6 +331,58 @@ class HotdataSourceClient(ManagedDatabaseClient):
             "so whether it produced rows cannot be established"
         )
 
+    # This wait's own bounds. `_poll` reading two private attributes off a base
+    # class in another distribution is the coupling that broke these waits once
+    # already, so it reads its own -- but under names of their own rather than
+    # the base class's, which the first attempt reused. Matching those names
+    # would shadow them for every *inherited* method too, so a framework release
+    # that retuned either value would silently stop reaching this client.
+    _POLL_TIMEOUT_SECONDS = 300.0
+    _POLL_SLEEP_SECONDS = 0.4
+
+    # Statuses that end a wait without satisfying it. `interrupted` is terminal
+    # and belongs here -- omitting it made an interrupted run wait out the whole
+    # 300s bound and then report a timeout, which names the wrong problem.
+    # `cancelled`, which this poll used to list, is not a status the API sends.
+    _POLL_FAILURES = frozenset({"failed", "interrupted"})
+
+    def _poll(
+        self,
+        fetch: Callable[[], _S],
+        *,
+        is_ready: Callable[[_S], bool],
+        describe: str,
+    ) -> _S:
+        """Poll ``fetch`` until ``is_ready`` holds, or raise on failure/timeout.
+
+        Owned here rather than inherited. The base class used to provide this and
+        no longer does: it now waits on the query run instead, so the generic
+        helper had no second caller left there. This client still needs a wait of
+        its own shape -- retry per request, not per wait, and ``limit=0`` on the
+        readiness check -- so it keeps one, and a private method on a base class
+        in another package was never a safe thing to build on.
+
+        An unrecognised status keeps polling rather than ending the wait. Calling
+        an unknown status terminal would be easier to diagnose and much worse to
+        live with: one status added upstream would fail every read at once, where
+        waiting costs a single slow call. So the timeout names the status it last
+        saw, which is what makes an omission findable.
+        """
+        deadline = time.monotonic() + self._POLL_TIMEOUT_SECONDS
+        last_status: str | None = None
+        while time.monotonic() < deadline:
+            obj = fetch()
+            last_status = obj.status
+            if is_ready(obj):
+                return obj
+            if obj.status in self._POLL_FAILURES:
+                raise RuntimeError(obj.error_message or f"{describe} {obj.status}")
+            time.sleep(self._POLL_SLEEP_SECONDS)
+        raise TimeoutError(
+            f"{describe} timed out after {self._POLL_TIMEOUT_SECONDS}s "
+            f"(last status: {last_status})"
+        )
+
     def _await_result(self, result_id: str, *, database_id: str) -> tuple[str, int]:
         """Wait for a result to be ready, and take its row count off the way out.
 
@@ -338,9 +401,8 @@ class HotdataSourceClient(ManagedDatabaseClient):
         response because the total is a HEADER: reading it means the
         ``_with_http_info`` variant, whose wrapper puts the model one level down
         at ``.data``, and ``_poll`` inspects ``obj.status`` directly to spot a
-        failed or cancelled result. Passing the wrapper in breaks that check, so
-        the poll keeps the plain model and the header is fetched once, after
-        ready.
+        failed result. Passing the wrapper in breaks that check, so the poll
+        keeps the plain model and the header is fetched once, after ready.
         """
         results = ResultsApi(self._runtime.api)
         self._poll(
