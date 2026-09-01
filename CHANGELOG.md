@@ -29,9 +29,10 @@ Changelog style — terse "bullet + brief why":
   local copy treats `interrupted` as terminal — it was absent, so an interrupted
   run waited out the full 300s bound and then reported a timeout — and drops
   `cancelled`, which this API does not send; an unrecognised status keeps waiting
-  and the timeout names it. `_QUERY_TIMEOUT_SECONDS` and `_POLL_INTERVAL_SECONDS`
-  are defined here too, at the same values, so the wait rents nothing from the
-  base class.
+  and the timeout names it. The wait reads its own `_POLL_TIMEOUT_SECONDS` /
+  `_POLL_SLEEP_SECONDS` rather than the base class's constants, so it rents
+  nothing -- and under distinct names, which avoids shadowing the base values for
+  inherited waits.
 
 ## [0.15.0] - 2026-08-27
 

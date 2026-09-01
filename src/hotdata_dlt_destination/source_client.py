@@ -331,13 +331,14 @@ class HotdataSourceClient(ManagedDatabaseClient):
             "so whether it produced rows cannot be established"
         )
 
-    # The wait's own bounds, rather than the base class's. Same values it uses,
-    # so behaviour is unchanged -- but `_poll` reading two private attributes off
-    # a base class in another distribution is the coupling that broke these waits
-    # once already, and owning the method while renting its constants would leave
-    # the same failure one deletion away.
-    _QUERY_TIMEOUT_SECONDS = 300.0
-    _POLL_INTERVAL_SECONDS = 0.4
+    # This wait's own bounds. `_poll` reading two private attributes off a base
+    # class in another distribution is the coupling that broke these waits once
+    # already, so it reads its own -- but under names of their own rather than
+    # the base class's, which the first attempt reused. Matching those names
+    # would shadow them for every *inherited* method too, so a framework release
+    # that retuned either value would silently stop reaching this client.
+    _POLL_TIMEOUT_SECONDS = 300.0
+    _POLL_SLEEP_SECONDS = 0.4
 
     # Statuses that end a wait without satisfying it. `interrupted` is terminal
     # and belongs here -- omitting it made an interrupted run wait out the whole
@@ -367,7 +368,7 @@ class HotdataSourceClient(ManagedDatabaseClient):
         waiting costs a single slow call. So the timeout names the status it last
         saw, which is what makes an omission findable.
         """
-        deadline = time.monotonic() + self._QUERY_TIMEOUT_SECONDS
+        deadline = time.monotonic() + self._POLL_TIMEOUT_SECONDS
         last_status: str | None = None
         while time.monotonic() < deadline:
             obj = fetch()
@@ -376,9 +377,9 @@ class HotdataSourceClient(ManagedDatabaseClient):
                 return obj
             if obj.status in self._POLL_FAILURES:
                 raise RuntimeError(obj.error_message or f"{describe} {obj.status}")
-            time.sleep(self._POLL_INTERVAL_SECONDS)
+            time.sleep(self._POLL_SLEEP_SECONDS)
         raise TimeoutError(
-            f"{describe} timed out after {self._QUERY_TIMEOUT_SECONDS}s "
+            f"{describe} timed out after {self._POLL_TIMEOUT_SECONDS}s "
             f"(last status: {last_status})"
         )
 
