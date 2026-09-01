@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 
     from hotdata_dlt_destination.configuration import HotdataClientConfiguration
 
+
 def _chain_messages(ex: Exception, limit: int = 6) -> str:
     """Join the messages of ``ex`` and its ``__cause__`` chain (lowercased).
 
