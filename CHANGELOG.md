@@ -34,6 +34,10 @@ Changelog style — terse "bullet + brief why":
 
 ### Fixed
 
+- Internal-table SQL qualifies with the database's own catalog, and literals — the
+  `escape_literal` capability included — are plain quoted strings: an overridden
+  catalog never answered to `default` and the engine rejects `E'...'`, so these
+  reads failed on every load.
 - A failed read of `_dlt_version` or `_dlt_loads` no longer replaces the table with
   a single row, discarding load and schema history and leaving `get_stored_state`
   with no completed load to match.

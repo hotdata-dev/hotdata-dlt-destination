@@ -88,6 +88,37 @@ class HotdataClient(ManagedDatabaseClient):
         if self._config is not None:
             self._config._hotdata_db = db
             self._config._hotdata_db_created = created
+            if db is None:
+                # The catalog belongs to the record; outliving it would leave a
+                # stale name for whatever is resolved next.
+                self._config._hotdata_catalog = None
+
+    def _cache_catalog(self, catalog: str | None) -> None:
+        if self._config is not None:
+            self._config._hotdata_catalog = catalog
+
+    @property
+    def catalog(self) -> str:
+        """Name this database's own catalog answers to inside its query scope.
+
+        `default` unless the database was created with a catalog override, so it
+        cannot be hardcoded: a database created as e.g. `mqtt_tf2` does not answer
+        to `default`, and every qualified reference against it fails to resolve.
+        The id-first bind reads the real name off the record, so this RESOLVES
+        rather than reading a cache: returning the `default` fallback merely
+        because nothing had been resolved yet is the whole bug, one caller
+        further out. A database this run CREATED never carries an override, so
+        `default` is correct there, and it stays the fallback.
+
+        Raises ``KeyError`` when no database is configured or resolved -- the same
+        signal ``_require_db`` gives, which callers already read as "nothing
+        stored yet".
+        """
+        cached = getattr(self._config, "_hotdata_catalog", None)
+        if cached:
+            return cached
+        self._require_db()
+        return getattr(self._config, "_hotdata_catalog", None) or "default"
 
     def _was_created(self) -> bool:
         return bool(getattr(self._config, "_hotdata_db_created", False))
@@ -108,6 +139,9 @@ class HotdataClient(ManagedDatabaseClient):
             if _is_not_found(exc):
                 raise KeyError(database_id) from exc
             raise
+        # managed_database_from_detail drops default_catalog, and it is the only
+        # place the real catalog name is reported.
+        self._cache_catalog(getattr(detail, "default_catalog", None))
         return managed_database_from_detail(detail)
 
     def _configured_database_id(self) -> str | None:
@@ -431,7 +465,7 @@ class HotdataClient(ManagedDatabaseClient):
             db = self._require_db()
             if not self._table_is_synced_for(db, table, schema=schema):
                 return None
-            sql = f'SELECT * FROM "default"."{schema}"."{table}"'
+            sql = f'SELECT * FROM "{self.catalog}"."{schema}"."{table}"'
             result_id = self._query_database_scoped(sql, database_id=db.id)
             if result_id is None:
                 return None

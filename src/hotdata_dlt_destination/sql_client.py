@@ -138,7 +138,8 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
 
     A dlt "dataset" maps to the Hotdata **schema**; the managed **database** is a
     separate scoping dimension passed out-of-band on each query (not in the SQL).
-    Table references qualify as ``"default"."<schema>"."<table>"``.
+    Table references qualify as ``"<catalog>"."<schema>"."<table>"``, where the
+    catalog is the database's own (``default`` unless overridden at create time).
     """
 
     dbapi: ClassVar[DBApi] = None
@@ -227,8 +228,25 @@ class HotdataSqlClient(SqlClientBase[HotdataClient]):
     # --- overridden concrete methods -------------------------------------
 
     def catalog_name(self, quote: bool = True, casefold: bool = True) -> str | None:
-        # Hotdata's catalog is always "default"; drives default.public.<table>.
+        # The database's own catalog answers to "default" only when it was created
+        # without a catalog override, so take the resolved name when there is one.
+        # `catalog` resolves the database, which raises KeyError when none is
+        # configured -- and this runs outside @raise_database_error, so a raw
+        # KeyError would escape identifier construction instead of surfacing as a
+        # typed dlt error from the query itself (has_dataset catches it likewise).
         catalog = "default"
+        if self._client is not None:
+            try:
+                catalog = self._client.catalog
+            except KeyError:
+                # Nothing resolved yet -- the default-qualified form is right.
+                pass
+            except (HotdataTerminalError, HotdataTransientError) as exc:
+                # `catalog` binds the database on the first read of a run, so this
+                # is an HTTP failure, not "nothing configured". Falling back would
+                # build a wrong catalog and report a missing table instead of the
+                # real error -- and dlt reads retryability off the typed exception.
+                raise self._make_database_exception(exc) from exc
         if casefold:
             catalog = self.capabilities.casefold_identifier(catalog)
         if quote:

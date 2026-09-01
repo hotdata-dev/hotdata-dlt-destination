@@ -7,7 +7,6 @@ import warnings
 from dlt.common.arithmetics import DEFAULT_NUMERIC_PRECISION, DEFAULT_NUMERIC_SCALE
 from dlt.common.data_writers.escape import (
     escape_postgres_identifier,
-    escape_postgres_literal,
 )
 from dlt.common.destination import Destination, DestinationCapabilitiesContext
 from dlt.common.normalizers.naming import NamingConvention
@@ -17,6 +16,7 @@ from hotdata_dlt_destination.configuration import (
     HotdataClientConfiguration,
     HotdataCredentials,
 )
+from hotdata_dlt_destination.escape import escape_hotdata_literal
 
 if t.TYPE_CHECKING:
     from hotdata_dlt_destination.job_client import HotdataJobClient
@@ -61,7 +61,9 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
         caps.wei_precision = (EVM_DECIMAL_PRECISION, 0)
         caps.sqlglot_dialect = "postgres"
         caps.escape_identifier = escape_postgres_identifier
-        caps.escape_literal = escape_postgres_literal
+        # NOT escape_postgres_literal: it emits E'...', which this engine's
+        # parser rejects. See escape.py.
+        caps.escape_literal = escape_hotdata_literal
         return caps
 
     @classmethod

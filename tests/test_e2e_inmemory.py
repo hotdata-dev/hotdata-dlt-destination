@@ -205,8 +205,8 @@ class InMemoryBackend:
                     pa.RecordBatch.from_pylist([], schema=tbl.schema)
                 ]
                 ctx.register_record_batches(table, [batches])
-        # Strip the "default"."<schema>". qualifier so bare table names resolve.
-        rewritten = re.sub(r'"default"\."[^"]+"\.(?=")', "", sql)
+        # Strip the "<catalog>"."<schema>". qualifier so bare table names resolve.
+        rewritten = re.sub(r'"[^"]+"\."[^"]+"\.(?=")', "", sql)
         return ctx.sql(rewritten).to_arrow_table()
 
     def store_result(self, table):
