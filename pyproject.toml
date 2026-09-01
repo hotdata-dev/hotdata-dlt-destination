@@ -41,7 +41,7 @@ dependencies = [
     # what lets a consumer of this package adopt a newer framework at all: a
     # transitive cap here is what blocks them, not their own pin.
     "hotdata>=0.9.0,<0.10",
-    "hotdata-framework>=0.13.0,<0.14",
+    "hotdata-framework>=0.14.0,<0.15",
     "pandas>=2.0",
     "pyarrow>=14",
 ]

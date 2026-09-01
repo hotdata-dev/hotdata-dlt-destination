@@ -28,6 +28,9 @@ Changelog style — terse "bullet + brief why":
 
 ### Changed
 
+- Require `hotdata-framework>=0.14.0,<0.15` (was `>=0.13.0,<0.14`). 0.14 waits on
+  the query run instead of polling the result body for a status, so a managed-table
+  read no longer fetches the whole result twice to learn that it is ready.
 - Bookkeeping tables are appended to and read with a pushed-down predicate rather
   than fetched and rewritten whole on every load; `_dlt_version` gains a row only
   when the schema hash changes, so per-load cost no longer grows with load count.
