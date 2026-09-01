@@ -331,6 +331,14 @@ class HotdataSourceClient(ManagedDatabaseClient):
             "so whether it produced rows cannot be established"
         )
 
+    # The wait's own bounds, rather than the base class's. Same values it uses,
+    # so behaviour is unchanged -- but `_poll` reading two private attributes off
+    # a base class in another distribution is the coupling that broke these waits
+    # once already, and owning the method while renting its constants would leave
+    # the same failure one deletion away.
+    _QUERY_TIMEOUT_SECONDS = 300.0
+    _POLL_INTERVAL_SECONDS = 0.4
+
     # Statuses that end a wait without satisfying it. `interrupted` is terminal
     # and belongs here -- omitting it made an interrupted run wait out the whole
     # 300s bound and then report a timeout, which names the wrong problem.

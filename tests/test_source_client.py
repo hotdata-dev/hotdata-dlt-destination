@@ -1156,10 +1156,11 @@ def test_the_readiness_poll_is_owned_here_not_inherited() -> None:
     the thing that made that possible, so the assertion is about ownership rather
     than about the attribute merely existing.
     """
-    assert "_poll" in HotdataSourceClient.__dict__, (
-        "_poll must be defined on HotdataSourceClient; inheriting it from "
-        "hotdata-framework couples this package to a private method it does not own"
-    )
+    for name in ("_poll", "_QUERY_TIMEOUT_SECONDS", "_POLL_INTERVAL_SECONDS"):
+        assert name in HotdataSourceClient.__dict__, (
+            f"{name} must be defined on HotdataSourceClient; inheriting it from "
+            "hotdata-framework couples this package to a private name it does not own"
+        )
 
 
 def test_poll_stops_on_a_run_that_was_interrupted() -> None:
@@ -1201,6 +1202,8 @@ def test_poll_keeps_waiting_on_an_unknown_status_and_names_it_on_timeout() -> No
         pytest.MonkeyPatch.context() as mp,
         pytest.raises(TimeoutError, match="something_new"),
     ):
+        # Both constants belong to this class, so this patches nothing it
+        # does not own.
         mp.setattr(HotdataSourceClient, "_QUERY_TIMEOUT_SECONDS", 0.05)
         mp.setattr(HotdataSourceClient, "_POLL_INTERVAL_SECONDS", 0.0)
         client._poll(fetch, is_ready=lambda r: r.status == "ready", describe="Result r1")

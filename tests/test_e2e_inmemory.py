@@ -230,11 +230,22 @@ class _FakeQueryApi:
         )
 
 
+class _FakeResultsApi:
+    """Readiness, as frameworks up to 0.13 ask for it."""
+
+    def __init__(self, api):
+        pass
+
+    def get_result(self, result_id, *, x_database_id=None, limit=None):
+        return SimpleNamespace(status="ready", result_id=result_id, error_message=None)
+
+
 class _FakeQueryRunsApi:
     """Readiness, and the id of the result the run produced.
 
-    The framework waits on the query run rather than polling the result body for
-    a status, so this replaces the results fake that used to answer `ready`.
+    Later frameworks wait on the query run rather than polling the result body
+    for a status. Both fakes are installed so this suite works either side of
+    that change instead of binding to one framework version.
     """
 
     def __init__(self, api):
@@ -284,6 +295,9 @@ def backend(monkeypatch):
     _ACTIVE["backend"] = be
     monkeypatch.setattr(mc, "QueryApi", _FakeQueryApi)
     monkeypatch.setattr(mc, "QueryRunsApi", _FakeQueryRunsApi)
+    # `raising=False`: later frameworks drop this import, having stopped reading
+    # a result body to learn its status.
+    monkeypatch.setattr(mc, "ResultsApi", _FakeResultsApi, raising=False)
     monkeypatch.setattr(mc, "ArrowResultsApi", _FakeArrowResultsApi)
     # hotdata_client.py also references ArrowResultsApi (for execute_sql) and
     # DatabasesApi (for the id-first bind).
