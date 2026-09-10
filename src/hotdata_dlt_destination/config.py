@@ -49,14 +49,18 @@ def plain_env_overrides() -> dict[str, Any]:
         tables = [table.strip() for table in declared.split(",") if table.strip()]
         if tables:
             overrides["declared_tables"] = tables
+    # Truthiness, not `is not None`: a set-but-blank variable means unset here,
+    # the same convention the string settings above follow and .env.example ships
+    # (`HOTDATA_DATABASE_ID=`). An `is not None` check would raise out of the
+    # hotdata(...) constructor — or silently flip the create flag — on a blank.
     flag = os.environ.get("HOTDATA_CREATE_DATABASE_IF_MISSING")
-    if flag is not None:
+    if flag:
         overrides["create_database_if_missing"] = flag.lower() in {"1", "true", "yes"}
     retries = os.environ.get("HOTDATA_MAX_RETRIES")
-    if retries is not None:
+    if retries:
         overrides["max_retries"] = _parse_max_retries(retries)
     backoff = os.environ.get("HOTDATA_RETRY_BACKOFF_SECONDS")
-    if backoff is not None:
+    if backoff:
         overrides["retry_backoff_seconds"] = _parse_backoff(backoff)
     return overrides
 

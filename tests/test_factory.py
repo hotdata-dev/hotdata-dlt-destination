@@ -156,3 +156,16 @@ def test_unset_plain_env_leaves_defaults(clean_env) -> None:
     assert cfg.database_name == "dlt"
     assert cfg.max_retries == 8
     assert cfg.retry_backoff_seconds == 1.5
+
+
+def test_blank_plain_env_vars_are_treated_as_unset(clean_env) -> None:
+    # .env.example ships blank values (HOTDATA_DATABASE_ID=); a blank must mean
+    # "unset", not a parse error out of the constructor or a flipped flag.
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    clean_env.setenv("HOTDATA_MAX_RETRIES", "")
+    clean_env.setenv("HOTDATA_RETRY_BACKOFF_SECONDS", "")
+    clean_env.setenv("HOTDATA_CREATE_DATABASE_IF_MISSING", "")
+    cfg = _resolve(hotdata(workspace_id="ws"))
+    assert cfg.max_retries == 8
+    assert cfg.retry_backoff_seconds == 1.5
+    assert cfg.create_database_if_missing is True
