@@ -5,8 +5,18 @@ from hotdata_dlt_destination.job_client import HotdataJobClient
 
 _ENV_KEYS = (
     "HOTDATA_API_KEY",
+    "HOTDATA_DATABASE_ID",
+    "HOTDATA_DATABASE",
+    "HOTDATA_SCHEMA",
+    "HOTDATA_WRITE_DISPOSITION",
+    "HOTDATA_DECLARED_TABLES",
+    "HOTDATA_CREATE_DATABASE_IF_MISSING",
+    "HOTDATA_API_BASE_URL",
+    "HOTDATA_MAX_RETRIES",
+    "HOTDATA_RETRY_BACKOFF_SECONDS",
     "DESTINATION__HOTDATA__CREDENTIALS__API_KEY",
     "DESTINATION__HOTDATA__WORKSPACE_ID",
+    "DESTINATION__HOTDATA__SCHEMA",
 )
 
 
@@ -94,3 +104,55 @@ def test_legacy_workspace_in_credentials_dict_is_hoisted_without_mutating(clean_
     cfg = _resolve(dest)
     assert cfg.credentials.api_key == "k"
     assert cfg.workspace_id == "ws_dict"
+
+
+def test_plain_env_vars_reach_the_destination(clean_env) -> None:
+    # The documented HOTDATA_* contract (issue #95): these must land in the
+    # resolved config, not just in the diagnostic CLI's from_env().
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    clean_env.setenv("HOTDATA_DATABASE_ID", "db_env")
+    clean_env.setenv("HOTDATA_SCHEMA", "staging")
+    clean_env.setenv("HOTDATA_MAX_RETRIES", "3")
+    clean_env.setenv("HOTDATA_RETRY_BACKOFF_SECONDS", "0.5")
+    clean_env.setenv("HOTDATA_DECLARED_TABLES", "orders, customers")
+    clean_env.setenv("HOTDATA_CREATE_DATABASE_IF_MISSING", "false")
+    cfg = _resolve(hotdata(workspace_id="ws"))
+    assert cfg.database_id == "db_env"
+    assert cfg.schema == "staging"
+    assert cfg.max_retries == 3
+    assert cfg.retry_backoff_seconds == 0.5
+    assert cfg.declared_tables == ["orders", "customers"]
+    assert cfg.create_database_if_missing is False
+
+
+def test_explicit_param_beats_plain_env(clean_env) -> None:
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    clean_env.setenv("HOTDATA_SCHEMA", "from_env")
+    cfg = _resolve(hotdata(workspace_id="ws", schema="from_param"))
+    assert cfg.schema == "from_param"
+
+
+def test_plain_env_beats_dlt_style_env(clean_env) -> None:
+    # Same precedence the HOTDATA_API_KEY bridge has always had: the plain name
+    # is bound at construction, so it outranks the provider-resolved form.
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    clean_env.setenv("HOTDATA_SCHEMA", "plain")
+    clean_env.setenv("DESTINATION__HOTDATA__SCHEMA", "dlt_style")
+    cfg = _resolve(hotdata(workspace_id="ws"))
+    assert cfg.schema == "plain"
+
+
+def test_dlt_style_env_still_works_without_plain_var(clean_env) -> None:
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    clean_env.setenv("DESTINATION__HOTDATA__SCHEMA", "dlt_style")
+    cfg = _resolve(hotdata(workspace_id="ws"))
+    assert cfg.schema == "dlt_style"
+
+
+def test_unset_plain_env_leaves_defaults(clean_env) -> None:
+    clean_env.setenv("HOTDATA_API_KEY", "sk_env")
+    cfg = _resolve(hotdata(workspace_id="ws"))
+    assert cfg.schema == "public"
+    assert cfg.database_name == "dlt"
+    assert cfg.max_retries == 8
+    assert cfg.retry_backoff_seconds == 1.5

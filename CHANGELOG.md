@@ -21,6 +21,17 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+### Fixed
+
+- The documented `HOTDATA_*` env vars now reach the destination (previously only
+  `HOTDATA_API_KEY` did); explicit params still win, and the plain names take
+  precedence over `DESTINATION__HOTDATA__*` / `config.toml` (#95).
+
+### Changed
+
+- Diagnostic CLI retry defaults aligned with the destination's: `max_retries` 8
+  (was 5), `retry_backoff_seconds` 1.5 (was 1.0).
+
 ## [0.16.0] - 2026-09-01
 
 ### Added

@@ -12,6 +12,7 @@ from dlt.common.destination import Destination, DestinationCapabilitiesContext
 from dlt.common.normalizers.naming import NamingConvention
 from dlt.common.wei import EVM_DECIMAL_PRECISION
 
+from hotdata_dlt_destination.config import plain_env_overrides
 from hotdata_dlt_destination.configuration import (
     HotdataClientConfiguration,
     HotdataCredentials,
@@ -123,6 +124,30 @@ class hotdata(Destination[HotdataClientConfiguration, "HotdataJobClient"]):
         # routing param with no env fallback — pass it to hotdata(workspace_id=...).
         if credentials is None and os.environ.get("HOTDATA_API_KEY") is not None:
             credentials = HotdataCredentials(api_key=os.environ["HOTDATA_API_KEY"])
+
+        # The plain HOTDATA_* names are the documented environment contract,
+        # shared with the diagnostic CLI. Like the HOTDATA_API_KEY bridge above,
+        # each applies only when the keyword is not passed, and takes precedence
+        # over dlt's DESTINATION__HOTDATA__* / config.toml forms.
+        env = plain_env_overrides()
+        if database_id is None:
+            database_id = env.get("database_id")
+        if database_name is None:
+            database_name = env.get("database_name")
+        if schema is None:
+            schema = env.get("schema")
+        if write_disposition is None:
+            write_disposition = env.get("write_disposition")
+        if declared_tables is None:
+            declared_tables = env.get("declared_tables")
+        if create_database_if_missing is None:
+            create_database_if_missing = env.get("create_database_if_missing")
+        if api_base_url is None:
+            api_base_url = env.get("api_base_url")
+        if max_retries is None:
+            max_retries = env.get("max_retries")
+        if retry_backoff_seconds is None:
+            retry_backoff_seconds = env.get("retry_backoff_seconds")
 
         super().__init__(
             credentials=credentials,
