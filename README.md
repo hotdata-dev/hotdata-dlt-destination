@@ -41,7 +41,7 @@ dlt handles extraction, schema inference, and batching. This package is a **nati
 ## Requirements
 
 - Python **3.11+**
-- A [Hotdata](https://hotdata.dev) workspace, an API key, and its workspace ID. Grab both from your Hotdata dashboard, or with the [Hotdata CLI](https://github.com/hotdata-dev/sdk-python).
+- A [Hotdata](https://hotdata.dev) workspace, an API key, and its workspace ID. Grab both from your Hotdata dashboard, or with the [Hotdata CLI](https://github.com/hotdata-dev/hotdata-cli).
 
 ## Install
 
@@ -422,7 +422,7 @@ If you add a new table later, include it in `declared_tables` on the next run â€
 
 ## Verify a load
 
-After a pipeline runs, use the [Hotdata CLI](https://github.com/hotdata-dev/sdk-python) to check that the data landed:
+After a pipeline runs, use the [Hotdata CLI](https://github.com/hotdata-dev/hotdata-cli) to check that the data landed:
 
 ```bash
 # List your instant databases (shows each database's id)
