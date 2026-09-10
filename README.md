@@ -371,7 +371,7 @@ Notes:
 | `retry_backoff_seconds` | `HOTDATA_RETRY_BACKOFF_SECONDS` | `1.5` | Initial wait between retries (grows linearly with each attempt) |
 | `max_state_files` | `DESTINATION__HOTDATA__MAX_STATE_FILES` | `100` | How many `_dlt_pipeline_state` rows to keep per pipeline. Only the newest is ever read; older rows are trimmed. Set `0` to keep every row |
 
-Pass these as keyword arguments to `hotdata(...)`. The `api_key` is the exception — being a secret, it's read from `HOTDATA_API_KEY` (or supplied via `credentials=`, e.g. `hotdata(credentials={"api_key": "..."}, ...)`); `workspace_id` has no environment variable. `hotdata` also accepts:
+Pass these as keyword arguments to `hotdata(...)`. The `api_key` is the exception — being a secret, it's read from `HOTDATA_API_KEY` (or supplied via `credentials=`, e.g. `hotdata(credentials={"api_key": "..."}, ...)`); `workspace_id` has no environment variable. When a setting is given more than one way, explicit `hotdata(...)` keywords win, then the plain `HOTDATA_*` variables, then dlt's `DESTINATION__HOTDATA__*` / `config.toml` forms. `hotdata` also accepts:
 
 - `max_table_nesting` (default `1000`) — maximum nested/child-table depth.
 - `loader_parallelism_strategy` (default `sequential`) — instant-database loads lock at the catalog level, so different tables in the same database can't load concurrently. Override only if you know your loads won't contend for the same database.
