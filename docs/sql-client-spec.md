@@ -346,13 +346,13 @@ moves between dlt **minors** — method signatures, the cursor's `iter_arrow`/`i
 import location of `WithSqlClient`. A minor bump can change the base-class contract out from under us.
 Built/verified against `dlt==1.28.1`.
 
-**Why cap the Hotdata SDKs — `hotdata>=0.9.0,<0.10`,
-`hotdata-framework>=0.13.0,<0.14`.** The read path uses query/result API models,
+**Why cap the Hotdata SDKs — `hotdata>=0.11,<0.12`,
+`hotdata-framework>=0.14.1,<0.15`.** The read path uses query/result API models,
 managed-table layout metadata, and the framework load helpers that carry native
 append/delete/update/upsert support. These SDKs move quickly, so the destination
 tracks one tested minor at a time.
 
-The framework floor sits at 0.13 because every load on the `append`/`replace`
+The framework floor is ≥0.13 because every load on the `append`/`replace`
 path goes out as `mode="append"`, and an earlier framework runs an append at most
 once — leaving the loads this package issues most, dlt's `_dlt_pipeline_state` /
 `_dlt_loads` / `_dlt_version` bookkeeping among them, outside the caller's retry
@@ -364,8 +364,8 @@ all: a transitive cap here bounds them whatever their own pin says.
 ```toml
 dependencies = [
     "dlt>=1.28.1,<1.29",          # subclass dlt internals -> cap the minor
-    "hotdata>=0.9.0,<0.10",        # generated client: query/results APIs
-    "hotdata-framework>=0.13.0,<0.14",  # managed-table load and layout helpers
+    "hotdata>=0.11,<0.12",         # generated client: query/results APIs
+    "hotdata-framework>=0.14.1,<0.15",  # managed-table load and layout helpers
     ...
 ]
 ```

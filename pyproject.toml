@@ -20,7 +20,7 @@ dependencies = [
     # create_managed_database(keys=) / add_managed_table(key=) (framework 0.8.0),
     # for native delete/update/upsert.
     #
-    # The floors are held ABOVE that on purpose: hotdata 0.9 is where the rest of
+    # The floors are held ABOVE that on purpose: hotdata 0.11 is where the rest of
     # the toolchain has moved, and admitting older versions would mean supporting
     # a matrix nothing tests. The framework floor is the one with a hard reason.
     #
@@ -40,7 +40,7 @@ dependencies = [
     # The cap stays at the minor for the reason above it, and widening it is
     # what lets a consumer of this package adopt a newer framework at all: a
     # transitive cap here is what blocks them, not their own pin.
-    "hotdata>=0.9.0,<0.10",
+    "hotdata>=0.11,<0.12",
     "hotdata-framework>=0.14.1,<0.15",
     "pandas>=2.0",
     "pyarrow>=14",
@@ -50,14 +50,12 @@ dependencies = [
 # Live ibis backend for dataset().ibis(). Pulls the out-of-tree ibis.hotdata
 # backend and ibis itself; the base install stays ibis-free.
 #
-# hotdata-ibis 0.5.0 is the first release without a `hotdata<0.9` cap. That cap
-# is why this floor is worth recording: uv resolves a project's own extras into
-# one universal lockfile, so hotdata-ibis bounded `hotdata` in uv.lock here even
-# for `uv sync` without `--extra ibis`. A plain `pip install` of the base package
-# is unaffected — pip reads an extra's requirements only when the extra is
-# requested. So this cap blocked THIS repo from adopting hotdata 0.9; what blocked
-# consumers downstream was the core `hotdata-framework` cap above.
-ibis = ["hotdata-ibis>=0.5.0,<0.6", "ibis-framework>=12,<13"]
+# hotdata-ibis caps `hotdata` (0.6 requires hotdata>=0.11,<0.12), and uv
+# resolves a project's own extras into one universal lockfile, so that cap bounds
+# `hotdata` in uv.lock here even for `uv sync` without `--extra ibis`. Bump the
+# two together. A plain `pip install` of the base package is unaffected — pip
+# reads an extra's requirements only when the extra is requested.
+ibis = ["hotdata-ibis>=0.6,<0.7", "ibis-framework>=12,<13"]
 
 [project.urls]
 Homepage = "https://hotdata.dev"
