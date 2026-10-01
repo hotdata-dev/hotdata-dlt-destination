@@ -31,6 +31,9 @@ Changelog style — terse "bullet + brief why":
 
 - Require `hotdata-framework>=0.14.1,<0.15` (was `>=0.14.0`); 0.14.1 allows
   `hotdata<0.12`, a prerequisite for adopting hotdata 0.11.
+- Require `hotdata>=0.11,<0.12` (was `>=0.9.0,<0.10`) and, for the `[ibis]` extra,
+  `hotdata-ibis>=0.6,<0.7` (was `>=0.5.0,<0.6`); hotdata 0.10 drops the JWT key
+  exchange (the API token is sent as the bearer directly).
 - Diagnostic CLI retry defaults aligned with the destination's: `max_retries` 8
   (was 5), `retry_backoff_seconds` 1.5 (was 1.0).
 
