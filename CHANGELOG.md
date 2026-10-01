@@ -21,6 +21,8 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+## [0.17.0] - 2026-10-01
+
 ### Fixed
 
 - The documented `HOTDATA_*` env vars now reach the destination (previously only
