@@ -26,6 +26,7 @@ dlt handles extraction, schema inference, and batching. This package is a **nati
 - [Quickstart](#quickstart)
 - [Read your data back](#read-your-data-back)
 - [Hotdata as a source](#hotdata-as-a-source)
+- [Run dbt on loaded data](#run-dbt-on-loaded-data)
 - [Feature support](#feature-support)
 - [Configuration](#configuration)
 - [Write modes](#write-modes)
@@ -52,6 +53,9 @@ uv add hotdata-dlt-destination
 
 # with the live ibis backend (dataset().ibis()):
 pip install "hotdata-dlt-destination[ibis]"
+
+# with the dbt-hotdata adapter, for running dbt in the same environment:
+pip install "hotdata-dlt-destination[dbt]"
 ```
 
 ## Quickstart
@@ -220,6 +224,40 @@ no such column unless something stamped one, and naming the wrong one fails by
 silently skipping rows rather than by erroring. Bound the read yourself
 (`limit=`, or a `WHERE` in `hotdata_query`) and use dlt's `write_disposition` for
 replace-mode snapshots or merge-on-key loads.
+
+## Run dbt on loaded data
+
+Transform loaded tables with [dbt](https://www.getdbt.com/) through the
+[`dbt-hotdata`](https://github.com/hotdata-dev/dbt-hotdata) adapter. The bridge
+mirrors dlt's built-in dbt runner (`dlt.dbt.package()`): it builds the dbt
+profile from the pipeline's own destination configuration, so there is no
+`profiles.yml` to write and no credentials to duplicate.
+
+```python
+import dlt
+from hotdata_dlt_destination import hotdata
+from hotdata_dlt_destination import dbt as hotdata_dbt
+
+pipeline = dlt.pipeline(
+    pipeline_name="analytics",
+    destination=hotdata(workspace_id="ws_...", database_id="db_..."),
+)
+pipeline.run(source)
+
+# an isolated venv with dbt-core + dbt-hotdata, created inside the pipeline's
+# working directory and reused across runs
+venv = hotdata_dbt.get_venv(pipeline)
+runner = hotdata_dbt.package(pipeline, "./transform", venv=venv)
+models = runner.run_all()
+```
+
+dbt builds in the **same instant database** the pipeline loaded, in the same
+schema by default. Pass `venv=None` to run dbt in the current environment
+instead — that needs the `[dbt]` extra installed.
+
+`package()` requires a resolvable `database_id` and raises without one: dbt
+silently creating a second database next to the one dlt loaded is exactly the
+mistake id-first addressing exists to prevent. Pin the id the first run logs.
 
 ## Feature support
 

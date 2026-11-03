@@ -21,6 +21,15 @@ Changelog style — terse "bullet + brief why":
   **Breaking:**. See the released entries below for the target density.
 -->
 
+### Added
+
+- dbt bridge — `hotdata_dlt_destination.dbt.package(pipeline, location)` runs a
+  dbt package against the pipeline's instant database via `dbt-hotdata`, with
+  `get_venv()` for an isolated dbt environment; requires a pinned `database_id`.
+- `dbt` extra installs `dbt-hotdata>=0.2.2,<0.3` — the first release whose
+  `hotdata`/`hotdata-framework` pins overlap this package's, so the adapter and
+  the destination can share an environment.
+
 ## [0.16.0] - 2026-09-01
 
 ### Added

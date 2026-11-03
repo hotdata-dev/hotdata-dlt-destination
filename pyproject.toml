@@ -58,6 +58,11 @@ dependencies = [
 # requested. So this cap blocked THIS repo from adopting hotdata 0.9; what blocked
 # consumers downstream was the core `hotdata-framework` cap above.
 ibis = ["hotdata-ibis>=0.5.0,<0.6", "ibis-framework>=12,<13"]
+# dbt adapter for running dbt packages against the same instant database dlt
+# loads (pulls dbt-core/dbt-adapters transitively). 0.2.2 is the first release
+# whose hotdata/hotdata-framework pins overlap this package's — same universal-
+# lockfile reasoning as the hotdata-ibis floor above.
+dbt = ["dbt-hotdata>=0.2.2,<0.3"]
 
 [project.urls]
 Homepage = "https://hotdata.dev"

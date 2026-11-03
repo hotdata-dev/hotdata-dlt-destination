@@ -1,0 +1,25 @@
+# dbt profile for running packages against the instant database a dlt pipeline
+# loads. Values arrive as DLT__* environment variables: dlt's dbt runner
+# exports the destination configuration with add_config_to_env() before every
+# dbt command (see dbt.py — the bridge guarantees DLT__DATABASE_ID is set).
+#
+# create_database_if_missing is hard-coded false: dbt must build on the
+# database dlt loaded, never create a second one. `database:` stays unset —
+# the catalog inside an instant database is always literally "default", and
+# the adapter rejects anything else.
+hotdata:
+  target: analytics
+  outputs:
+    analytics:
+      type: hotdata
+      schema: "{{ var('destination_dataset_name', var('source_dataset_name')) }}"
+      workspace_id: "{{ env_var('DLT__WORKSPACE_ID') }}"
+      api_key: "{{ env_var('DLT__CREDENTIALS__API_KEY') }}"
+      database_id: "{{ env_var('DLT__DATABASE_ID') }}"
+      api_base_url: "{{ env_var('DLT__API_BASE_URL') }}"
+      create_database_if_missing: false
+      max_retries: "{{ env_var('DLT__MAX_RETRIES') | as_number }}"
+      retry_backoff_seconds: "{{ env_var('DLT__RETRY_BACKOFF_SECONDS') | as_number }}"
+      # Loads into one database serialize server-side; contention is retried,
+      # but one thread is the setting that never has to.
+      threads: 1
